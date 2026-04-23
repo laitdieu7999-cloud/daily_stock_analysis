@@ -1,0 +1,152 @@
+name: Upstream Update Check
+
+on:
+  schedule:
+    - cron: '0 1 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-update-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      UPSTREAM_REPOSITORY: ${{ vars.UPSTREAM_REPOSITORY || 'ZhuLinsen/daily_stock_analysis' }}
+      TARGET_BRANCH: main
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: 🔗 Configure upstream remote
+        run: |
+          git remote remove upstream || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git remote -v
+
+      - name: 🔎 Check upstream status
+        run: |
+          python scripts/check_upstream_updates.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --branch "$TARGET_BRANCH" \
+            --remote upstream \
+            --json > upstream-status.json
+
+      - name: 📝 Build job summary
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path("upstream-status.json").read_text(encoding="utf-8"))
+          status = payload["repos"][0]
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          lines = [
+              "# Upstream Update Check",
+              "",
+              f"- Upstream repo: `{status['remote_ref']}`",
+              f"- Branch: `{status['branch']}`",
+              f"- State: `{status['state']}`",
+              f"- Ahead: `{status['ahead']}`",
+              f"- Behind: `{status['behind']}`",
+              f"- Dirty files: `{status['dirty_count']}`",
+              f"- Next step: {status['next_step']}",
+          ]
+          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: 📤 Upload upstream status artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: upstream-update-status-${{ github.run_number }}
+          path: upstream-status.json
+
+      - name: 📌 Sync tracking issue
+        uses: actions/github-script@v8
+        env:
+          UPSTREAM_REPOSITORY: ${{ env.UPSTREAM_REPOSITORY }}
+          TARGET_BRANCH: ${{ env.TARGET_BRANCH }}
+        with:
+          script: |
+            const fs = require('fs');
+            const payload = JSON.parse(fs.readFileSync('upstream-status.json', 'utf8'));
+            const status = payload.repos[0];
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const marker = '<!-- upstream-update-check -->';
+            const title = `Upstream updates detected for ${process.env.TARGET_BRANCH}`;
+            const issueBody = [
+              marker,
+              `Detected new commits from upstream repository \`${process.env.UPSTREAM_REPOSITORY}\`.`,
+              '',
+              `- Branch: \`${status.branch}\``,
+              `- Upstream ref: \`${status.remote_ref}\``,
+              `- Local HEAD: \`${status.local_head}\``,
+              `- Upstream HEAD: \`${status.remote_head}\``,
+              `- Ahead: \`${status.ahead}\``,
+              `- Behind: \`${status.behind}\``,
+              `- State: \`${status.state}\``,
+              `- Next step: ${status.next_step}`,
+              '',
+              `Workflow run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+            ].join('\n');
+
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            const trackedIssue = openIssues.find((issue) => !issue.pull_request && issue.title === title);
+
+            if (status.has_updates) {
+              if (trackedIssue) {
+                await github.rest.issues.update({
+                  owner,
+                  repo,
+                  issue_number: trackedIssue.number,
+                  body: issueBody,
+                });
+                core.info(`Updated issue #${trackedIssue.number}`);
+              } else {
+                const { data: created } = await github.rest.issues.create({
+                  owner,
+                  repo,
+                  title,
+                  body: issueBody,
+                });
+                core.info(`Created issue #${created.number}`);
+              }
+              return;
+            }
+
+            if (trackedIssue) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: trackedIssue.number,
+                body: `${marker}\nUpstream is back in sync. Closing this tracking issue.`,
+              });
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: trackedIssue.number,
+                state: 'closed',
+              });
+              core.info(`Closed issue #${trackedIssue.number}`);
+            } else {
+              core.info('No upstream updates and no open tracking issue found.');
+            }
