@@ -1,0 +1,21 @@
+{
+  "include": [
+    "docs/ASSET_OPERATIONS.md",
+    "docs/CUSTOM_EXTENSIONS.md",
+    "scripts/check_jin10_vip_watch.py",
+    "send_email.py",
+    "src/daily_push_pipeline.py",
+    "src/market_data_fetcher.py",
+    "src/models/**/*.py",
+    "strategies/asset_direction_policy.yaml",
+    "strategies/bollinger_five_state.yaml",
+    "strategies/geopolitical_risk_alert.yaml",
+    "strategies/gold_long_accumulation.yaml",
+    "strategies/ic_basis_roll_framework.yaml",
+    "strategies/macro_cycle_positioning.yaml",
+    "strategies/silver_dual_direction_framework.yaml",
+    "strategies/wyckoff_analysis.yaml",
+    "tests/test_custom_extensions.py",
+    "tests/test_metaphysical_features.py"
+  ]
+}
