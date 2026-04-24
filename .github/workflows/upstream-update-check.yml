@@ -18,6 +18,7 @@ jobs:
     env:
       UPSTREAM_REPOSITORY: ${{ vars.UPSTREAM_REPOSITORY || 'ZhuLinsen/daily_stock_analysis' }}
       TARGET_BRANCH: main
+      COMPARE_MODE: latest-tag
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v5
@@ -41,6 +42,7 @@ jobs:
             --repo "$GITHUB_WORKSPACE" \
             --branch "$TARGET_BRANCH" \
             --remote upstream \
+            --compare-mode "$COMPARE_MODE" \
             --json > upstream-status.json
 
       - name: 📝 Build job summary
@@ -57,6 +59,7 @@ jobs:
               "# Upstream Update Check",
               "",
               f"- Upstream repo: `{status['remote_ref']}`",
+              f"- Compare mode: `{status['compare_mode']}`",
               f"- Branch: `{status['branch']}`",
               f"- State: `{status['state']}`",
               f"- Ahead: `{status['ahead']}`",
@@ -95,7 +98,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const marker = '<!-- upstream-update-check -->';
-            const title = `Upstream updates detected for ${process.env.TARGET_BRANCH}`;
+            const title = `Upstream release updates detected for ${process.env.TARGET_BRANCH}`;
             const backupReminder = [
               'Before merging upstream changes, back up your custom assets first.',
               '',
@@ -105,7 +108,7 @@ jobs:
             ].join('\n');
             const issueBody = [
               marker,
-              `Detected new commits from upstream repository \`${process.env.UPSTREAM_REPOSITORY}\`.`,
+              `Detected upstream release-tag updates from \`${process.env.UPSTREAM_REPOSITORY}\`.`,
               '',
               `- Branch: \`${status.branch}\``,
               `- Upstream ref: \`${status.remote_ref}\``,

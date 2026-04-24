@@ -27,6 +27,7 @@ class RepoUpdateStatus:
     repo: str
     branch: str
     remote: str
+    compare_mode: str
     remote_ref: str
     local_head: str
     remote_head: str
@@ -92,6 +93,8 @@ def _resolve_branch(repo: Path, branch: str) -> str:
 
 
 def _resolve_remote_ref(repo: Path, branch: str, remote: str) -> tuple[str, str]:
+    if remote != DEFAULT_REMOTE:
+        return f"{remote}/{branch}", remote
     upstream = _run_git(repo, "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}", check=False).strip()
     if upstream and upstream != f"{branch}@{{upstream}}":
         remote_name = upstream.split("/", 1)[0]
@@ -99,10 +102,23 @@ def _resolve_remote_ref(repo: Path, branch: str, remote: str) -> tuple[str, str]
     return f"{remote}/{branch}", remote
 
 
-def _build_note(dirty_count: int, state: str, remote_ref: str) -> tuple[str, str]:
+def _resolve_latest_tag(repo: Path) -> str:
+    latest = _run_git(repo, "tag", "--list", "v*", "--sort=-version:refname")
+    tags = [line.strip() for line in latest.splitlines() if line.strip()]
+    if not tags:
+        latest = _run_git(repo, "tag", "--sort=-version:refname")
+        tags = [line.strip() for line in latest.splitlines() if line.strip()]
+    if not tags:
+        raise ValueError("could not determine latest release tag")
+    return tags[0]
+
+
+def _build_note(dirty_count: int, state: str, remote_ref: str, compare_mode: str) -> tuple[str, str]:
     notes: list[str] = []
     if dirty_count:
         notes.append("local working tree is dirty; avoid direct pull/rebase until changes are reviewed or saved")
+    if compare_mode == "latest-tag":
+        notes.append("default check mode tracks the latest release tag and ignores unreleased upstream main commits")
 
     if state == "in_sync":
         next_step = "No action needed."
@@ -126,7 +142,13 @@ def _summarize_state(ahead: int, behind: int) -> tuple[str, bool]:
     return "diverged", True
 
 
-def inspect_repo(repo: Path, branch: str = "", remote: str = DEFAULT_REMOTE, no_fetch: bool = False) -> RepoUpdateStatus:
+def inspect_repo(
+    repo: Path,
+    branch: str = "",
+    remote: str = DEFAULT_REMOTE,
+    no_fetch: bool = False,
+    compare_mode: str = "latest-tag",
+) -> RepoUpdateStatus:
     repo = repo.resolve()
     if not _is_git_repo(repo):
         raise ValueError(f"not a git repository: {repo}")
@@ -134,9 +156,16 @@ def inspect_repo(repo: Path, branch: str = "", remote: str = DEFAULT_REMOTE, no_
     resolved_branch = _resolve_branch(repo, branch)
 
     if not no_fetch:
-        _run_git(repo, "fetch", remote)
+        if compare_mode == "latest-tag":
+            _run_git(repo, "fetch", remote, "--tags")
+        else:
+            _run_git(repo, "fetch", remote)
 
-    remote_ref, resolved_remote = _resolve_remote_ref(repo, resolved_branch, remote)
+    if compare_mode == "latest-tag":
+        remote_ref = _resolve_latest_tag(repo)
+        resolved_remote = remote
+    else:
+        remote_ref, resolved_remote = _resolve_remote_ref(repo, resolved_branch, remote)
     ahead_behind = _run_git(repo, "rev-list", "--left-right", "--count", f"{resolved_branch}...{remote_ref}")
     left, right = (ahead_behind.split() + ["0", "0"])[:2]
     ahead = _safe_int(left)
@@ -145,12 +174,13 @@ def inspect_repo(repo: Path, branch: str = "", remote: str = DEFAULT_REMOTE, no_
     local_head = _run_git(repo, "rev-parse", "--short", resolved_branch)
     remote_head = _run_git(repo, "rev-parse", "--short", remote_ref)
     state, has_updates = _summarize_state(ahead, behind)
-    note, next_step = _build_note(dirty_count, state, remote_ref)
+    note, next_step = _build_note(dirty_count, state, remote_ref, compare_mode)
 
     return RepoUpdateStatus(
         repo=str(repo),
         branch=resolved_branch,
         remote=resolved_remote,
+        compare_mode=compare_mode,
         remote_ref=remote_ref,
         local_head=local_head,
         remote_head=remote_head,
@@ -169,6 +199,7 @@ def _format_status(status: RepoUpdateStatus) -> str:
     lines = [
         f"[repo]      {status.repo}",
         f"[branch]    {status.branch}",
+        f"[compare]   {status.compare_mode}",
         f"[remote]    {status.remote_ref}",
         f"[local]     {status.local_head}",
         f"[remote]    {status.remote_head}",
@@ -194,10 +225,14 @@ def _print_summary(statuses: Sequence[RepoUpdateStatus]) -> None:
     )
 
 
-def _collect_statuses(repos: Iterable[Path], branch: str, remote: str, no_fetch: bool) -> list[RepoUpdateStatus]:
+def _collect_statuses(
+    repos: Iterable[Path], branch: str, remote: str, no_fetch: bool, compare_mode: str
+) -> list[RepoUpdateStatus]:
     statuses: list[RepoUpdateStatus] = []
     for repo in repos:
-        statuses.append(inspect_repo(repo, branch=branch, remote=remote, no_fetch=no_fetch))
+        statuses.append(
+            inspect_repo(repo, branch=branch, remote=remote, no_fetch=no_fetch, compare_mode=compare_mode)
+        )
     return statuses
 
 
@@ -232,6 +267,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Remote name to fetch when no tracking branch is configured. Defaults to origin.",
     )
     parser.add_argument(
+        "--compare-mode",
+        choices=("latest-tag", "branch"),
+        default="latest-tag",
+        help="Comparison target. Defaults to latest-tag so unreleased upstream main commits are ignored.",
+    )
+    parser.add_argument(
         "--no-fetch",
         action="store_true",
         help="Skip `git fetch` and only inspect current refs.",
@@ -264,7 +305,13 @@ def main() -> int:
         if not args.no_fetch and not args.json:
             print(f"[info] fetching remote refs for {len(repos)} repo(s)...")
 
-        statuses = _collect_statuses(repos, branch=args.branch, remote=args.remote, no_fetch=args.no_fetch)
+        statuses = _collect_statuses(
+            repos,
+            branch=args.branch,
+            remote=args.remote,
+            no_fetch=args.no_fetch,
+            compare_mode=args.compare_mode,
+        )
 
         if args.json:
             payload = {
