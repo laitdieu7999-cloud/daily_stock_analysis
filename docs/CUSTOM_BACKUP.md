@@ -85,3 +85,13 @@ python3 scripts/backup_custom_assets.py restore backups/custom-assets-20260424-0
    - `custom-assets-backup-<run_number>`
 
 这样即使你本地环境出了问题，也可以先重新下载上游仓库，再从 GitHub artifact 里取回你自己的备份包。
+
+## 上游更新前提醒
+
+仓库内的 `Upstream Update Check` 工作流现在会在检测到上游有新提交时，自动在运行摘要和跟踪 issue 里提醒你先备份。
+
+推荐顺序：
+
+1. 先运行 `Custom Assets Backup` 或本地执行 `python3 scripts/backup_custom_assets.py backup`
+2. 再检查和处理上游更新
+3. 需要重新接回自定义内容时，先执行 `restore --dry-run`

@@ -64,6 +64,15 @@ jobs:
               f"- Dirty files: `{status['dirty_count']}`",
               f"- Next step: {status['next_step']}",
           ]
+          if status["has_updates"]:
+              lines.extend(
+                  [
+                      "",
+                      "## Reminder",
+                      "- Before merging upstream changes, run `Custom Assets Backup` or create a local backup with `python3 scripts/backup_custom_assets.py backup`.",
+                      "- Review restore conflicts later with `python3 scripts/backup_custom_assets.py restore <archive> --target-repo <repo> --dry-run`.",
+                  ]
+              )
           summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
@@ -87,6 +96,13 @@ jobs:
             const repo = context.repo.repo;
             const marker = '<!-- upstream-update-check -->';
             const title = `Upstream updates detected for ${process.env.TARGET_BRANCH}`;
+            const backupReminder = [
+              'Before merging upstream changes, back up your custom assets first.',
+              '',
+              `- GitHub workflow: ${context.serverUrl}/${owner}/${repo}/actions/workflows/custom-assets-backup.yml`,
+              '- Local command: `python3 scripts/backup_custom_assets.py backup`',
+              '- Restore review: `python3 scripts/backup_custom_assets.py restore <archive> --target-repo <repo> --dry-run`',
+            ].join('\n');
             const issueBody = [
               marker,
               `Detected new commits from upstream repository \`${process.env.UPSTREAM_REPOSITORY}\`.`,
@@ -99,6 +115,9 @@ jobs:
               `- Behind: \`${status.behind}\``,
               `- State: \`${status.state}\``,
               `- Next step: ${status.next_step}`,
+              '',
+              '## Backup Reminder',
+              backupReminder,
               '',
               `Workflow run: ${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
             ].join('\n');
