@@ -71,7 +71,7 @@ python3 scripts/backup_custom_assets.py restore backups/custom-assets-20260424-0
 
 ## GitHub 云端备份
 
-仓库内已新增手动工作流：
+仓库内已新增备份工作流：
 
 - `.github/workflows/custom-assets-backup.yml`
 
@@ -79,7 +79,7 @@ python3 scripts/backup_custom_assets.py restore backups/custom-assets-20260424-0
 
 1. 打开 GitHub 仓库的 `Actions`
 2. 选择 `Custom Assets Backup`
-3. 手动运行一次
+3. 可手动运行，也会在每周一 UTC 03:00 自动运行
 4. 运行完成后，在该次 workflow 的 `Artifacts` 中下载：
    - `custom-assets-files-<run_number>`
    - `custom-assets-backup-<run_number>`
