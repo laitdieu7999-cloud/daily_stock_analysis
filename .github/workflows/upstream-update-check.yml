@@ -18,7 +18,7 @@ jobs:
     env:
       UPSTREAM_REPOSITORY: ${{ vars.UPSTREAM_REPOSITORY || 'ZhuLinsen/daily_stock_analysis' }}
       TARGET_BRANCH: main
-      COMPARE_MODE: latest-tag
+      COMPARE_MODE: branch
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v5
@@ -98,7 +98,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const marker = '<!-- upstream-update-check -->';
-            const title = `Upstream release updates detected for ${process.env.TARGET_BRANCH}`;
+            const title = `Upstream updates detected for ${process.env.TARGET_BRANCH}`;
             const backupReminder = [
               'Before merging upstream changes, back up your custom assets first.',
               '',
@@ -108,7 +108,7 @@ jobs:
             ].join('\n');
             const issueBody = [
               marker,
-              `Detected upstream release-tag updates from \`${process.env.UPSTREAM_REPOSITORY}\`.`,
+              `Detected new commits from upstream repository \`${process.env.UPSTREAM_REPOSITORY}\`.`,
               '',
               `- Branch: \`${status.branch}\``,
               `- Upstream ref: \`${status.remote_ref}\``,

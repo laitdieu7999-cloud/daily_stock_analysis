@@ -116,7 +116,7 @@ def test_inspect_repo_branch_mode_honors_explicit_remote(monkeypatch, tmp_path: 
     assert status.remote_ref == "upstream/main"
 
 
-def test_inspect_repo_defaults_to_latest_tag(monkeypatch, tmp_path: Path) -> None:
+def test_inspect_repo_supports_latest_tag_mode(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / ".git").mkdir()
 
     responses = {
@@ -139,7 +139,7 @@ def test_inspect_repo_defaults_to_latest_tag(monkeypatch, tmp_path: Path) -> Non
 
     monkeypatch.setattr("scripts.check_upstream_updates._run_git", fake_run_git)
 
-    status = inspect_repo(tmp_path, remote="upstream", no_fetch=False)
+    status = inspect_repo(tmp_path, remote="upstream", no_fetch=False, compare_mode="latest-tag")
 
     assert isinstance(status, RepoUpdateStatus)
     assert status.compare_mode == "latest-tag"
@@ -147,3 +147,30 @@ def test_inspect_repo_defaults_to_latest_tag(monkeypatch, tmp_path: Path) -> Non
     assert status.behind == 1
     assert status.state == "behind"
     assert ("fetch", "upstream", "--tags") in calls
+
+
+def test_inspect_repo_defaults_to_branch_mode(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+
+    responses = {
+        ("branch", "--show-current"): "main",
+        ("rev-parse", "--abbrev-ref", "main@{upstream}"): "origin/main",
+        ("rev-list", "--left-right", "--count", "main...origin/main"): "0\t2",
+        ("status", "--short"): "",
+        ("rev-parse", "--short", "main"): "abc1234",
+        ("rev-parse", "--short", "origin/main"): "def5678",
+    }
+
+    def fake_run_git(repo: Path, *args: str, check: bool = True) -> str:
+        key = tuple(args)
+        if key == ("fetch", "origin"):
+            return ""
+        assert key in responses, f"unexpected git call: {key}"
+        return responses[key]
+
+    monkeypatch.setattr("scripts.check_upstream_updates._run_git", fake_run_git)
+
+    status = inspect_repo(tmp_path, no_fetch=False)
+
+    assert status.compare_mode == "branch"
+    assert status.remote_ref == "origin/main"

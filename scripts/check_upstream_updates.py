@@ -147,7 +147,7 @@ def inspect_repo(
     branch: str = "",
     remote: str = DEFAULT_REMOTE,
     no_fetch: bool = False,
-    compare_mode: str = "latest-tag",
+    compare_mode: str = "branch",
 ) -> RepoUpdateStatus:
     repo = repo.resolve()
     if not _is_git_repo(repo):
@@ -269,8 +269,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compare-mode",
         choices=("latest-tag", "branch"),
-        default="latest-tag",
-        help="Comparison target. Defaults to latest-tag so unreleased upstream main commits are ignored.",
+        default="branch",
+        help="Comparison target. Defaults to branch so upstream main updates are tracked.",
     )
     parser.add_argument(
         "--no-fetch",
