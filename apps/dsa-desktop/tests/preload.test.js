@@ -7,6 +7,11 @@ test('preload exposes desktop version from BrowserWindow additionalArguments', (
   const originalArgv = [...process.argv];
   const exposeInMainWorldCalls = [];
   const expectedVersion = '3.12.0';
+  const ipcRenderer = {
+    invoke: () => undefined,
+    on: () => undefined,
+    removeListener: () => undefined,
+  };
 
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === 'electron') {
@@ -16,6 +21,7 @@ test('preload exposes desktop version from BrowserWindow additionalArguments', (
             exposeInMainWorldCalls.push(args);
           },
         },
+        ipcRenderer,
       };
     }
     return originalLoad.call(this, request, parent, isMain);
@@ -34,12 +40,12 @@ test('preload exposes desktop version from BrowserWindow additionalArguments', (
   const preloadModule = require('../preload.js');
 
   assert.equal(exposeInMainWorldCalls.length, 1);
-  assert.deepEqual(exposeInMainWorldCalls[0], [
-    'dsaDesktop',
-    {
-      version: expectedVersion,
-    },
-  ]);
+  assert.equal(exposeInMainWorldCalls[0][0], 'dsaDesktop');
+  assert.equal(exposeInMainWorldCalls[0][1].version, expectedVersion);
+  assert.equal(typeof exposeInMainWorldCalls[0][1].getUpdateState, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].checkForUpdates, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].openReleasePage, 'function');
+  assert.equal(typeof exposeInMainWorldCalls[0][1].onUpdateStateChange, 'function');
   assert.equal(
     preloadModule.readDesktopVersion([`--dsa-desktop-version=${expectedVersion}`]),
     expectedVersion
@@ -50,6 +56,11 @@ test('preload falls back to empty version when BrowserWindow does not pass one',
   const originalLoad = Module._load;
   const originalArgv = [...process.argv];
   const exposeInMainWorldCalls = [];
+  const ipcRenderer = {
+    invoke: () => undefined,
+    on: () => undefined,
+    removeListener: () => undefined,
+  };
 
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === 'electron') {
@@ -59,6 +70,7 @@ test('preload falls back to empty version when BrowserWindow does not pass one',
             exposeInMainWorldCalls.push(args);
           },
         },
+        ipcRenderer,
       };
     }
     return originalLoad.call(this, request, parent, isMain);
@@ -77,11 +89,7 @@ test('preload falls back to empty version when BrowserWindow does not pass one',
   const preloadModule = require('../preload.js');
 
   assert.equal(exposeInMainWorldCalls.length, 1);
-  assert.deepEqual(exposeInMainWorldCalls[0], [
-    'dsaDesktop',
-    {
-      version: '',
-    },
-  ]);
+  assert.equal(exposeInMainWorldCalls[0][0], 'dsaDesktop');
+  assert.equal(exposeInMainWorldCalls[0][1].version, '');
   assert.equal(preloadModule.readDesktopVersion(['--unrelated=1']), '');
 });

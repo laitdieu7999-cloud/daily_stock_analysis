@@ -7,6 +7,10 @@ import SettingsPage from '../SettingsPage';
 const {
   exportDesktopEnv,
   importDesktopEnv,
+  desktopCheckForUpdates,
+  desktopGetUpdateState,
+  desktopOnUpdateStateChange,
+  desktopOpenReleasePage,
   load,
   clearToast,
   setActiveCategory,
@@ -22,6 +26,10 @@ const {
 } = vi.hoisted(() => ({
   exportDesktopEnv: vi.fn(),
   importDesktopEnv: vi.fn(),
+  desktopCheckForUpdates: vi.fn(),
+  desktopGetUpdateState: vi.fn(),
+  desktopOnUpdateStateChange: vi.fn(),
+  desktopOpenReleasePage: vi.fn(),
   load: vi.fn(),
   clearToast: vi.fn(),
   setActiveCategory: vi.fn(),
@@ -84,9 +92,24 @@ vi.mock('../../components/settings', () => ({
       save llm channels
     </button>
   ),
-  SettingsAlert: ({ title, message }: { title: string; message: string }) => (
+  SettingsAlert: ({
+    title,
+    message,
+    actionLabel,
+    onAction,
+  }: {
+    title: string;
+    message: string;
+    actionLabel?: string;
+    onAction?: () => void;
+  }) => (
     <div>
       {title}:{message}
+      {actionLabel ? (
+        <button type="button" onClick={onAction}>
+          {actionLabel}
+        </button>
+      ) : null}
     </div>
   ),
   SettingsCategoryNav: ({
@@ -129,6 +152,17 @@ vi.mock('../../components/settings', () => ({
     </section>
   ),
 }));
+
+function createDesktopRuntime(overrides: Record<string, unknown> = {}) {
+  return {
+    version: '3.12.0',
+    getUpdateState: desktopGetUpdateState,
+    checkForUpdates: desktopCheckForUpdates,
+    openReleasePage: desktopOpenReleasePage,
+    onUpdateStateChange: desktopOnUpdateStateChange,
+    ...overrides,
+  };
+}
 
 const baseCategories = [
   { category: 'system', title: 'System', description: '系统设置', displayOrder: 1, fields: [] },
@@ -301,6 +335,20 @@ describe('SettingsPage', () => {
       updatedKeys: ['STOCK_LIST'],
       warnings: [],
     });
+    desktopGetUpdateState.mockResolvedValue({
+      status: 'idle',
+      currentVersion: '3.12.0',
+      latestVersion: '',
+      message: '',
+    });
+    desktopCheckForUpdates.mockResolvedValue({
+      status: 'up-to-date',
+      currentVersion: '3.12.0',
+      latestVersion: '3.12.0',
+      message: '当前桌面端已是最新版本。',
+    });
+    desktopOpenReleasePage.mockResolvedValue(true);
+    desktopOnUpdateStateChange.mockImplementation(() => () => undefined);
     useAuthMock.mockReturnValue({
       authEnabled: true,
       passwordChangeable: true,
@@ -332,7 +380,7 @@ describe('SettingsPage', () => {
   });
 
   it('renders desktop app version in system settings during desktop runtime', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
     render(<SettingsPage />);
 
@@ -523,7 +571,7 @@ describe('SettingsPage', () => {
   });
 
   it('renders desktop env backup actions in desktop runtime and exports saved env', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
     render(<SettingsPage />);
 
@@ -537,7 +585,7 @@ describe('SettingsPage', () => {
   });
 
   it('asks for confirmation before importing when local drafts exist', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({ hasDirty: true, dirtyCount: 2 }));
 
     render(<SettingsPage />);
@@ -551,7 +599,7 @@ describe('SettingsPage', () => {
   });
 
   it('reloads config after successful desktop env import', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
 
     const { container } = render(<SettingsPage />);
 
@@ -571,7 +619,7 @@ describe('SettingsPage', () => {
   });
 
   it('shows an error when desktop env import succeeds but reload fails', async () => {
-    (window as { dsaDesktop?: unknown }).dsaDesktop = { version: '3.12.0' };
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
     load.mockResolvedValue(false);
 
     const { container } = render(<SettingsPage />);
@@ -593,5 +641,53 @@ describe('SettingsPage', () => {
     expect(screen.getByText('配置已导入但刷新失败')).toBeInTheDocument();
     expect(screen.getByText('备份已导入，但重新加载配置失败，请手动重载页面。')).toBeInTheDocument();
     expect(screen.queryByText('已导入 .env 备份并重新加载配置。')).not.toBeInTheDocument();
+  });
+
+  it('renders desktop update notice when a newer release is available', async () => {
+    desktopGetUpdateState.mockResolvedValue({
+      status: 'update-available',
+      currentVersion: '3.12.0',
+      latestVersion: '3.13.0',
+      releaseUrl: 'https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0',
+      message: '发现新版本 3.13.0，可前往 GitHub Releases 下载更新。',
+    });
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText(/发现新版本:当前 3\.12\.0，最新 3\.13\.0/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '前往下载' })).toBeInTheDocument();
+  });
+
+  it('checks desktop updates on demand and renders the latest-version state', async () => {
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '检查更新' }));
+
+    await waitFor(() => expect(desktopCheckForUpdates).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('已是最新版本:当前桌面端已是最新版本。')).toBeInTheDocument();
+  });
+
+  it('opens GitHub release page from desktop update notice', async () => {
+    desktopGetUpdateState.mockResolvedValue({
+      status: 'update-available',
+      currentVersion: '3.12.0',
+      latestVersion: '3.13.0',
+      releaseUrl: 'https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0',
+      message: '发现新版本 3.13.0，可前往 GitHub Releases 下载更新。',
+    });
+    (window as { dsaDesktop?: unknown }).dsaDesktop = createDesktopRuntime();
+
+    render(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '前往下载' }));
+
+    await waitFor(() => {
+      expect(desktopOpenReleasePage).toHaveBeenCalledWith(
+        'https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v3.13.0'
+      );
+    });
   });
 });

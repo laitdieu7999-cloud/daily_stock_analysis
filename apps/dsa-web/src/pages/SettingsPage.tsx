@@ -22,15 +22,70 @@ import type { SystemConfigCategory } from '../types/systemConfig';
 type DesktopWindow = Window & {
   dsaDesktop?: {
     version?: string;
+    getUpdateState?: () => Promise<unknown>;
+    checkForUpdates?: () => Promise<unknown>;
+    openReleasePage?: (url?: string) => Promise<boolean>;
+    onUpdateStateChange?: (handler: (payload: unknown) => void) => (() => void) | void;
   };
 };
 
-function getDesktopAppVersion() {
+type DesktopUpdateState = {
+  status: 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'error';
+  currentVersion: string;
+  latestVersion: string;
+  releaseUrl: string;
+  checkedAt: string;
+  publishedAt: string;
+  message: string;
+  releaseName: string;
+  tagName: string;
+};
+
+const EMPTY_DESKTOP_UPDATE_STATE: DesktopUpdateState = {
+  status: 'idle',
+  currentVersion: '',
+  latestVersion: '',
+  releaseUrl: '',
+  checkedAt: '',
+  publishedAt: '',
+  message: '',
+  releaseName: '',
+  tagName: '',
+};
+
+function getDesktopRuntime() {
   if (typeof window === 'undefined') {
-    return '';
+    return undefined;
   }
 
-  return (window as DesktopWindow).dsaDesktop?.version?.trim() || '';
+  return (window as DesktopWindow).dsaDesktop;
+}
+
+function getDesktopAppVersion() {
+  const version = getDesktopRuntime()?.version;
+  return typeof version === 'string' ? version.trim() : '';
+}
+
+function normalizeDesktopUpdateState(raw: unknown): DesktopUpdateState {
+  if (!raw || typeof raw !== 'object') {
+    return { ...EMPTY_DESKTOP_UPDATE_STATE };
+  }
+
+  const value = raw as Record<string, unknown>;
+  const status = typeof value.status === 'string' ? value.status : 'idle';
+  return {
+    status: ['idle', 'checking', 'up-to-date', 'update-available', 'error'].includes(status)
+      ? (status as DesktopUpdateState['status'])
+      : 'idle',
+    currentVersion: typeof value.currentVersion === 'string' ? value.currentVersion : '',
+    latestVersion: typeof value.latestVersion === 'string' ? value.latestVersion : '',
+    releaseUrl: typeof value.releaseUrl === 'string' ? value.releaseUrl : '',
+    checkedAt: typeof value.checkedAt === 'string' ? value.checkedAt : '',
+    publishedAt: typeof value.publishedAt === 'string' ? value.publishedAt : '',
+    message: typeof value.message === 'string' ? value.message : '',
+    releaseName: typeof value.releaseName === 'string' ? value.releaseName : '',
+    tagName: typeof value.tagName === 'string' ? value.tagName : '',
+  };
 }
 
 function formatDesktopEnvFilename() {
@@ -47,11 +102,15 @@ const SettingsPage: React.FC = () => {
   const [desktopActionSuccess, setDesktopActionSuccess] = useState<string>('');
   const [isExportingEnv, setIsExportingEnv] = useState(false);
   const [isImportingEnv, setIsImportingEnv] = useState(false);
+  const [isCheckingDesktopUpdate, setIsCheckingDesktopUpdate] = useState(false);
+  const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState>(EMPTY_DESKTOP_UPDATE_STATE);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
   const desktopImportRef = useRef<HTMLInputElement | null>(null);
-  const isDesktopRuntime = typeof window !== 'undefined' && Boolean((window as DesktopWindow).dsaDesktop);
+  const desktopRuntime = getDesktopRuntime();
+  const isDesktopRuntime = Boolean(desktopRuntime);
   const desktopAppVersion = getDesktopAppVersion();
   const shouldShowDesktopVersionCard = Boolean(desktopAppVersion);
+  const canCheckDesktopUpdate = Boolean(desktopRuntime?.checkForUpdates && desktopRuntime?.getUpdateState);
 
   // Set page title
   useEffect(() => {
@@ -100,6 +159,31 @@ const SettingsPage: React.FC = () => {
       window.clearTimeout(timer);
     };
   }, [clearToast, toast]);
+
+  useEffect(() => {
+    if (!canCheckDesktopUpdate || !desktopRuntime) {
+      setDesktopUpdateState(EMPTY_DESKTOP_UPDATE_STATE);
+      return;
+    }
+
+    let disposed = false;
+    void desktopRuntime.getUpdateState?.().then((payload) => {
+      if (!disposed) {
+        setDesktopUpdateState(normalizeDesktopUpdateState(payload));
+      }
+    });
+
+    const unsubscribe = desktopRuntime.onUpdateStateChange?.((payload) => {
+      setDesktopUpdateState(normalizeDesktopUpdateState(payload));
+    });
+
+    return () => {
+      disposed = true;
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, [canCheckDesktopUpdate, desktopRuntime]);
 
   const rawActiveItems = itemsByCategory[activeCategory] || [];
   const rawActiveItemMap = new Map(rawActiveItems.map((item) => [item.key, String(item.value ?? '')]));
@@ -157,6 +241,58 @@ const SettingsPage: React.FC = () => {
         ? rawActiveItems.filter((item) => !AGENT_HIDDEN_KEYS.has(item.key))
       : rawActiveItems;
   const desktopActionDisabled = isLoading || isSaving || isExportingEnv || isImportingEnv;
+
+  const handleDesktopUpdateCheck = async () => {
+    if (!desktopRuntime?.checkForUpdates) {
+      return;
+    }
+
+    setIsCheckingDesktopUpdate(true);
+    try {
+      const payload = await desktopRuntime.checkForUpdates();
+      setDesktopUpdateState(normalizeDesktopUpdateState(payload));
+    } finally {
+      setIsCheckingDesktopUpdate(false);
+    }
+  };
+
+  const openDesktopReleasePage = async () => {
+    if (!desktopRuntime?.openReleasePage) {
+      return;
+    }
+    await desktopRuntime.openReleasePage(desktopUpdateState.releaseUrl);
+  };
+
+  const desktopUpdateNotice = (() => {
+    if (!canCheckDesktopUpdate) {
+      return null;
+    }
+    if (desktopUpdateState.status === 'update-available') {
+      return {
+        title: '发现新版本',
+        message: `当前 ${desktopUpdateState.currentVersion || '未知'}，最新 ${desktopUpdateState.latestVersion || '未知'}。${desktopUpdateState.message}`,
+        variant: 'warning' as const,
+        actionLabel: '前往下载',
+      };
+    }
+    if (desktopUpdateState.status === 'up-to-date') {
+      return {
+        title: '已是最新版本',
+        message: desktopUpdateState.message || '当前桌面端已是最新版本。',
+        variant: 'success' as const,
+        actionLabel: undefined,
+      };
+    }
+    if (desktopUpdateState.status === 'error') {
+      return {
+        title: '检查更新失败',
+        message: desktopUpdateState.message || '暂时无法获取 GitHub Releases 最新版本信息。',
+        variant: 'error' as const,
+        actionLabel: undefined,
+      };
+    }
+    return null;
+  })();
 
   const downloadDesktopEnv = async () => {
     setDesktopActionError(null);
@@ -340,6 +476,43 @@ const SettingsPage: React.FC = () => {
                 <p className="text-xs leading-6 text-muted-text">
                   重新执行前端构建或 Docker 镜像构建后，此处的构建标识和构建时间会更新，可用来确认当前页面资源是否已切换。
                 </p>
+                {canCheckDesktopUpdate ? (
+                  <div className="mt-4 space-y-3 rounded-2xl border settings-border bg-background/30 px-4 py-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">桌面端更新</p>
+                        <p className="text-xs leading-6 text-muted-text">
+                          启动后会自动检查 GitHub Releases 最新正式版；发现更新时仅提醒并跳转下载页，不会静默下载或自动安装。
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="settings-secondary"
+                        onClick={() => void handleDesktopUpdateCheck()}
+                        disabled={isCheckingDesktopUpdate}
+                        isLoading={isCheckingDesktopUpdate}
+                        loadingText="检查中..."
+                      >
+                        检查更新
+                      </Button>
+                    </div>
+                    {desktopUpdateNotice ? (
+                      <SettingsAlert
+                        title={desktopUpdateNotice.title}
+                        message={desktopUpdateNotice.message}
+                        variant={desktopUpdateNotice.variant}
+                        actionLabel={desktopUpdateNotice.actionLabel}
+                        onAction={desktopUpdateNotice.actionLabel ? () => {
+                          void openDesktopReleasePage();
+                        } : undefined}
+                      />
+                    ) : (
+                      <p className="text-xs leading-6 text-muted-text">
+                        当前尚无更新状态，应用启动后会在后台自动检查。
+                      </p>
+                    )}
+                  </div>
+                ) : null}
                 {WEB_BUILD_INFO.isFallbackVersion ? (
                   <p className="text-xs leading-6 text-amber-700 dark:text-amber-300">
                     当前 package.json 仍为占位版本 0.0.0，页面已自动回退展示构建标识，避免误判旧资源仍在生效。

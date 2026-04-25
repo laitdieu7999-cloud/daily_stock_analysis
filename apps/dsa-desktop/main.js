@@ -1,14 +1,18 @@
-const { app, BrowserWindow, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const net = require('net');
 const http = require('http');
+const https = require('https');
 
 let mainWindow = null;
 let backendProcess = null;
 let logFilePath = null;
 let backendStartError = null;
+let desktopUpdateState = null;
+let desktopUpdateIpcRegistered = false;
+let lastNotifiedUpdateVersion = '';
 
 function resolveWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#08080c' : '#f4f7fb';
@@ -16,6 +20,317 @@ function resolveWindowBackgroundColor() {
 
 const isWindows = process.platform === 'win32';
 const appRootDev = path.resolve(__dirname, '..', '..');
+const GITHUB_OWNER = 'ZhuLinsen';
+const GITHUB_REPO = 'daily_stock_analysis';
+const RELEASES_PAGE_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
+const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+const DEFAULT_UPDATE_TIMEOUT_MS = 5000;
+
+const UPDATE_STATUS = Object.freeze({
+  IDLE: 'idle',
+  CHECKING: 'checking',
+  UP_TO_DATE: 'up-to-date',
+  UPDATE_AVAILABLE: 'update-available',
+  ERROR: 'error',
+});
+
+function normalizeVersionString(version) {
+  return String(version || '')
+    .trim()
+    .replace(/^v/i, '')
+    .replace(/\+.*$/, '');
+}
+
+function parseSemver(version) {
+  const normalized = normalizeVersionString(version);
+  const match = normalized.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+    patch: Number.parseInt(match[3], 10),
+    prerelease: match[4] ? match[4].split('.') : [],
+  };
+}
+
+function comparePrereleaseIdentifiers(left, right) {
+  const leftIsNumeric = /^\d+$/.test(left);
+  const rightIsNumeric = /^\d+$/.test(right);
+
+  if (leftIsNumeric && rightIsNumeric) {
+    const leftNumber = Number.parseInt(left, 10);
+    const rightNumber = Number.parseInt(right, 10);
+    if (leftNumber === rightNumber) {
+      return 0;
+    }
+    return leftNumber > rightNumber ? 1 : -1;
+  }
+
+  if (leftIsNumeric !== rightIsNumeric) {
+    return leftIsNumeric ? -1 : 1;
+  }
+
+  if (left === right) {
+    return 0;
+  }
+  return left > right ? 1 : -1;
+}
+
+function compareVersions(leftVersion, rightVersion) {
+  const left = parseSemver(leftVersion);
+  const right = parseSemver(rightVersion);
+  if (!left || !right) {
+    return null;
+  }
+
+  for (const key of ['major', 'minor', 'patch']) {
+    if (left[key] !== right[key]) {
+      return left[key] > right[key] ? 1 : -1;
+    }
+  }
+
+  if (!left.prerelease.length && !right.prerelease.length) {
+    return 0;
+  }
+  if (!left.prerelease.length) {
+    return 1;
+  }
+  if (!right.prerelease.length) {
+    return -1;
+  }
+
+  const maxLength = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftPart = left.prerelease[index];
+    const rightPart = right.prerelease[index];
+    if (leftPart === undefined) {
+      return -1;
+    }
+    if (rightPart === undefined) {
+      return 1;
+    }
+
+    const compared = comparePrereleaseIdentifiers(leftPart, rightPart);
+    if (compared !== 0) {
+      return compared;
+    }
+  }
+
+  return 0;
+}
+
+function buildDesktopUpdateState(state = {}) {
+  return {
+    status: state.status || UPDATE_STATUS.IDLE,
+    currentVersion: normalizeVersionString(state.currentVersion || app.getVersion()),
+    latestVersion: normalizeVersionString(state.latestVersion),
+    releaseUrl:
+      typeof state.releaseUrl === 'string' && state.releaseUrl.trim()
+        ? state.releaseUrl.trim()
+        : RELEASES_PAGE_URL,
+    checkedAt: typeof state.checkedAt === 'string' ? state.checkedAt : '',
+    publishedAt: typeof state.publishedAt === 'string' ? state.publishedAt : '',
+    message: typeof state.message === 'string' ? state.message : '',
+    releaseName: typeof state.releaseName === 'string' ? state.releaseName : '',
+    tagName: typeof state.tagName === 'string' ? state.tagName : '',
+  };
+}
+
+function emitDesktopUpdateState() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send('desktop:update-state-changed', desktopUpdateState);
+}
+
+function setDesktopUpdateState(state = {}) {
+  desktopUpdateState = buildDesktopUpdateState({
+    ...(desktopUpdateState || {}),
+    ...state,
+  });
+  emitDesktopUpdateState();
+  return desktopUpdateState;
+}
+
+function fetchLatestRelease(timeoutMs = DEFAULT_UPDATE_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(
+      LATEST_RELEASE_API_URL,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'daily-stock-analysis-desktop',
+        },
+      },
+      (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        });
+        response.on('end', () => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`GitHub API responded with status ${response.statusCode || 'unknown'}`));
+            return;
+          }
+
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+          } catch (_error) {
+            reject(new Error('Failed to parse GitHub release response.'));
+          }
+        });
+      }
+    );
+
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Desktop update check timed out after ${timeoutMs}ms`));
+    });
+    request.on('error', reject);
+  });
+}
+
+function extractReleaseInfo(release) {
+  if (!release || typeof release !== 'object') {
+    return null;
+  }
+
+  const tagName = typeof release.tag_name === 'string' ? release.tag_name.trim() : '';
+  const version = normalizeVersionString(tagName);
+  if (!parseSemver(version)) {
+    return null;
+  }
+
+  return {
+    tagName,
+    version,
+    releaseName: typeof release.name === 'string' ? release.name.trim() : '',
+    releaseUrl:
+      typeof release.html_url === 'string' && release.html_url.trim()
+        ? release.html_url.trim()
+        : RELEASES_PAGE_URL,
+    publishedAt: typeof release.published_at === 'string' ? release.published_at : '',
+  };
+}
+
+async function openDesktopReleasePage(url = '') {
+  const target = typeof url === 'string' && url.trim()
+    ? url.trim()
+    : (desktopUpdateState?.releaseUrl || RELEASES_PAGE_URL);
+  await shell.openExternal(target);
+  return true;
+}
+
+async function maybeNotifyDesktopUpdate(state) {
+  if (!state || state.status !== UPDATE_STATUS.UPDATE_AVAILABLE) {
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (!state.latestVersion || state.latestVersion === lastNotifiedUpdateVersion) {
+    return;
+  }
+
+  lastNotifiedUpdateVersion = state.latestVersion;
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    buttons: ['前往下载', '稍后再说'],
+    defaultId: 0,
+    cancelId: 1,
+    title: '发现桌面端新版本',
+    message: `发现新版本 ${state.latestVersion}`,
+    detail: state.message || '可前往 GitHub Releases 下载更新。',
+  });
+
+  if (result.response === 0) {
+    await openDesktopReleasePage(state.releaseUrl);
+  }
+}
+
+async function checkForDesktopUpdates({ notify = false } = {}) {
+  setDesktopUpdateState({
+    status: UPDATE_STATUS.CHECKING,
+    checkedAt: new Date().toISOString(),
+    message: '正在检查桌面端更新...',
+  });
+
+  try {
+    const releaseInfo = extractReleaseInfo(await fetchLatestRelease());
+    if (!releaseInfo) {
+      return setDesktopUpdateState({
+        status: UPDATE_STATUS.ERROR,
+        checkedAt: new Date().toISOString(),
+        message: 'GitHub Release 未返回可识别的语义化版本标签。',
+      });
+    }
+
+    const currentVersion = normalizeVersionString(app.getVersion());
+    const compared = compareVersions(currentVersion, releaseInfo.version);
+    if (compared === null) {
+      return setDesktopUpdateState({
+        status: UPDATE_STATUS.ERROR,
+        latestVersion: releaseInfo.version,
+        releaseUrl: releaseInfo.releaseUrl,
+        checkedAt: new Date().toISOString(),
+        publishedAt: releaseInfo.publishedAt,
+        releaseName: releaseInfo.releaseName,
+        tagName: releaseInfo.tagName,
+        message: '当前桌面端版本不是有效的语义化版本，无法检查更新。',
+      });
+    }
+
+    const nextState = compared < 0
+      ? setDesktopUpdateState({
+        status: UPDATE_STATUS.UPDATE_AVAILABLE,
+        currentVersion,
+        latestVersion: releaseInfo.version,
+        releaseUrl: releaseInfo.releaseUrl,
+        checkedAt: new Date().toISOString(),
+        publishedAt: releaseInfo.publishedAt,
+        releaseName: releaseInfo.releaseName,
+        tagName: releaseInfo.tagName,
+        message: `发现新版本 ${releaseInfo.version}，可前往 GitHub Releases 下载更新。`,
+      })
+      : setDesktopUpdateState({
+        status: UPDATE_STATUS.UP_TO_DATE,
+        currentVersion,
+        latestVersion: releaseInfo.version,
+        releaseUrl: releaseInfo.releaseUrl,
+        checkedAt: new Date().toISOString(),
+        publishedAt: releaseInfo.publishedAt,
+        releaseName: releaseInfo.releaseName,
+        tagName: releaseInfo.tagName,
+        message: '当前桌面端已是最新版本。',
+      });
+
+    if (notify) {
+      await maybeNotifyDesktopUpdate(nextState);
+    }
+
+    return nextState;
+  } catch (error) {
+    return setDesktopUpdateState({
+      status: UPDATE_STATUS.ERROR,
+      checkedAt: new Date().toISOString(),
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function registerDesktopUpdateIpc() {
+  if (desktopUpdateIpcRegistered) {
+    return;
+  }
+
+  desktopUpdateState = buildDesktopUpdateState();
+  ipcMain.handle('desktop:get-update-state', async () => buildDesktopUpdateState(desktopUpdateState));
+  ipcMain.handle('desktop:check-for-updates', async () => checkForDesktopUpdates({ notify: true }));
+  ipcMain.handle('desktop:open-release-page', async (_event, url) => openDesktopReleasePage(url));
+  desktopUpdateIpcRegistered = true;
+}
 
 function resolveEnvExamplePath() {
   if (app.isPackaged) {
@@ -547,6 +862,7 @@ async function createWindow() {
     await mainWindow.loadURL(`http://127.0.0.1:${port}/`);
     logStartup(`Main page loadURL resolved in ${Date.now() - mainPageStartedAt}ms`);
     logStartup(`Main UI loaded in ${Date.now() - startupStartedAt}ms`);
+    void checkForDesktopUpdates({ notify: true });
   } catch (error) {
     logStartup(`Startup failed while waiting for health: ${String(error)}`);
     const errorUrl = `file://${loadingPath}?error=${encodeURIComponent(String(error))}`;
@@ -554,7 +870,10 @@ async function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  registerDesktopUpdateIpc();
+  return createWindow();
+});
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {

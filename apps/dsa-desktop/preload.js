@@ -1,4 +1,4 @@
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 const DESKTOP_VERSION_ARG_PREFIX = '--dsa-desktop-version=';
 
@@ -11,6 +11,22 @@ function readDesktopVersion(argv = process.argv) {
 
 contextBridge.exposeInMainWorld('dsaDesktop', {
   version: readDesktopVersion(),
+  getUpdateState: () => ipcRenderer.invoke('desktop:get-update-state'),
+  checkForUpdates: () => ipcRenderer.invoke('desktop:check-for-updates'),
+  openReleasePage: (url) => ipcRenderer.invoke('desktop:open-release-page', url),
+  onUpdateStateChange: (handler) => {
+    if (typeof handler !== 'function') {
+      return () => undefined;
+    }
+
+    const listener = (_event, payload) => {
+      handler(payload);
+    };
+    ipcRenderer.on('desktop:update-state-changed', listener);
+    return () => {
+      ipcRenderer.removeListener('desktop:update-state-changed', listener);
+    };
+  },
 });
 
 module.exports = {
