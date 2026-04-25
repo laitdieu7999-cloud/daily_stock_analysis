@@ -10,6 +10,8 @@
 """
 
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Body
@@ -28,6 +30,8 @@ from api.v1.schemas.history import (
     ReportStrategy,
     ReportDetails,
     MarkdownReportResponse,
+    ArchiveInsightItem,
+    ArchiveInsightsResponse,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
@@ -48,6 +52,57 @@ from src.utils.data_processing import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.get(
+    "/archive/insights",
+    response_model=ArchiveInsightsResponse,
+    responses={
+        200: {"description": "长期归档洞察列表"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取长期归档洞察",
+    description="读取每日归档目录中的周度、月度、调整建议等最新 Markdown 文件"
+)
+def get_archive_insights() -> ArchiveInsightsResponse:
+    archive_dir = Path.cwd() / "reports" / "daily_push_archive"
+    definitions = [
+        ("weekly_dashboard", "周度命中率看板", "weekly_dashboard_latest.md"),
+        ("weekly_review", "周度效果复盘", "weekly_review_latest.md"),
+        ("monthly_dashboard", "月度稳定性看板", "monthly_dashboard_latest.md"),
+        ("monthly_review", "月度稳定性复盘", "monthly_review_latest.md"),
+        ("first_review_readiness", "真复盘就绪判断", "first_review_readiness_latest.md"),
+        ("recommendation_adjustment", "推荐调整建议", "recommendation_adjustment_latest.md"),
+        ("strategy_group", "策略分组表现表", "strategy_group_performance_latest.md"),
+        ("scenario_group", "推荐场景表现表", "recommendation_scenario_performance_latest.md"),
+    ]
+
+    items = []
+    try:
+        for key, title, filename in definitions:
+            path = archive_dir / filename
+            if not path.exists() or not path.is_file():
+                continue
+            stat = path.stat()
+            items.append(
+                ArchiveInsightItem(
+                    key=key,
+                    title=title,
+                    path=str(path),
+                    updated_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    content=path.read_text(encoding="utf-8"),
+                )
+            )
+        return ArchiveInsightsResponse(items=items)
+    except Exception as exc:
+        logger.error("读取长期归档洞察失败: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"读取长期归档洞察失败: {str(exc)}"
+            }
+        )
 
 
 @router.get(
@@ -225,17 +280,21 @@ def get_history_detail(
         change_pct = None
         context_snapshot = result.get("context_snapshot")
         if context_snapshot and isinstance(context_snapshot, dict):
-            # 尝试从 enhanced_context.realtime 获取
+            # 注意：使用 `is None` 而非 `or`，避免把 0.0（平盘）误判为缺失值。
             enhanced_context = context_snapshot.get("enhanced_context") or {}
             realtime = enhanced_context.get("realtime") or {}
             current_price = realtime.get("price")
-            change_pct = realtime.get("change_pct") or realtime.get("change_60d")
-            
-            # 也尝试从 realtime_quote_raw 获取
+            change_pct = realtime.get("change_pct")
+
+            realtime_quote_raw = context_snapshot.get("realtime_quote_raw")
+            if not isinstance(realtime_quote_raw, dict):
+                realtime_quote_raw = {}
             if current_price is None:
-                realtime_quote_raw = context_snapshot.get("realtime_quote_raw") or {}
                 current_price = realtime_quote_raw.get("price")
-                change_pct = change_pct or realtime_quote_raw.get("change_pct") or realtime_quote_raw.get("pct_chg")
+            if change_pct is None:
+                change_pct = realtime_quote_raw.get("change_pct")
+            if change_pct is None:
+                change_pct = realtime_quote_raw.get("pct_chg")
         
         raw_result = result.get("raw_result")
         if not isinstance(raw_result, dict):

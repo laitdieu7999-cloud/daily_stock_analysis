@@ -344,8 +344,11 @@ class StockAnalysisPipeline:
             # Step 3: 趋势分析（基于交易理念）— 在 Agent 分支之前执行，供两条路径共用
             trend_result: Optional[TrendAnalysisResult] = None
             try:
+                from src.services.history_loader import get_frozen_target_date
+
                 _mkt = get_market_for_stock(normalize_stock_code(code))
-                end_date = get_market_now(_mkt).date()
+                frozen = get_frozen_target_date()
+                end_date = frozen if frozen else get_market_now(_mkt).date()
                 start_date = end_date - timedelta(days=89)  # ~60 trading days for MA60
                 historical_bars = self.db.get_data_range(code, start_date, end_date)
                 if historical_bars:
@@ -601,6 +604,35 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+                # 布林带指标
+                'boll_upper': trend_result.boll_upper,
+                'boll_mid': trend_result.boll_mid,
+                'boll_lower': trend_result.boll_lower,
+                'boll_width': trend_result.boll_width,
+                'boll_pctb': trend_result.boll_pctb,
+                'boll_status': trend_result.boll_status.value,
+                'boll_signal': trend_result.boll_signal,
+                # KDJ 指标
+                'kdj_k': trend_result.kdj_k,
+                'kdj_d': trend_result.kdj_d,
+                'kdj_j': trend_result.kdj_j,
+                'kdj_status': trend_result.kdj_status.value,
+                'kdj_signal': trend_result.kdj_signal,
+                # ATR 指标
+                'atr_14': trend_result.atr_14,
+                'atr_percent': trend_result.atr_percent,
+                # OBV 指标
+                'obv': trend_result.obv,
+                'obv_ma20': trend_result.obv_ma20,
+                'obv_status': trend_result.obv_status.value,
+                'obv_signal': trend_result.obv_signal,
+                # RSRS 择时指标
+                'rsrs_beta': trend_result.rsrs_beta,
+                'rsrs_zscore': trend_result.rsrs_zscore,
+                'rsrs_r2_weighted': trend_result.rsrs_r2_weighted,
+                'rsrs_r2': trend_result.rsrs_r2,
+                'rsrs_status': trend_result.rsrs_status.value,
+                'rsrs_signal': trend_result.rsrs_signal,
             }
 
         # Issue #234: Override today with realtime OHLC + trend MA for intraday analysis
@@ -736,6 +768,26 @@ class StockAnalysisPipeline:
         enriched_context["belong_boards"] = boards
         return enriched_context
 
+    def _ensure_agent_history(self, code: str, min_days: int = 240) -> None:
+        """Ensure enough K-line history is present in DB before agent tools run."""
+        from src.services.history_loader import get_frozen_target_date
+
+        target = get_frozen_target_date()
+        if target is None:
+            target = self._resolve_resume_target_date(code)
+        start = target - timedelta(days=int(min_days * 1.8))
+        bars = self.db.get_data_range(code, start, target)
+        if bars and len(bars) >= min(min_days, 200):
+            logger.debug("[%s] Agent history: %d bars in DB, sufficient", code, len(bars))
+            return
+        try:
+            df, source = self.fetcher_manager.get_daily_data(code, days=min_days)
+            if df is not None and not df.empty:
+                self.db.save_daily_data(df, code, source)
+                logger.info("[%s] Prefetched %d rows of history for agent (source: %s)", code, len(df), source)
+        except Exception as exc:
+            logger.warning("[%s] Agent history prefetch failed: %s", code, exc)
+
     def _analyze_with_agent(
         self, 
         code: str, 
@@ -788,6 +840,8 @@ class StockAnalysisPipeline:
                         logger.info(f"[{code}] Agent mode: social sentiment data injected into news_context")
                 except Exception as e:
                     logger.warning(f"[{code}] Agent mode: social sentiment fetch failed: {e}")
+
+            self._ensure_agent_history(code)
 
             # 运行 Agent
             if report_language == "en":
@@ -1206,7 +1260,11 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None
         """
         logger.info(f"========== 开始处理 {code} ==========")
-        
+
+        from src.services.history_loader import set_frozen_target_date, reset_frozen_target_date
+
+        frozen_td = self._resolve_resume_target_date(code, current_time=current_time)
+        token = set_frozen_target_date(frozen_td)
         try:
             self._emit_progress(12, f"{code}：正在准备分析任务")
             # Step 1: 获取并保存数据
@@ -1252,6 +1310,8 @@ class StockAnalysisPipeline:
             # 捕获所有异常，确保单股失败不影响整体
             logger.exception(f"[{code}] 处理过程发生未知异常: {e}")
             return None
+        finally:
+            reset_frozen_target_date(token)
     
     def run(
         self,
