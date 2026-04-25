@@ -62,23 +62,53 @@ def load_history_df(
 
     start = end - timedelta(days=int(days * 1.8) + 10)
     code = canonical_stock_code(stock_code)
+    normalized_code = canonical_stock_code(normalize_stock_code(stock_code))
+    candidates = []
+    for candidate in (code, normalized_code):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
 
     try:
         db = get_db()
-        bars = db.get_data_range(code, start, end)
-        if not bars:
-            alt = normalize_stock_code(stock_code)
-            if alt != code:
-                bars = db.get_data_range(alt, start, end)
-        if bars and len(bars) >= max(int(days * 0.3), 5):
-            df = pd.DataFrame([bar.to_dict() for bar in bars])
-            logger.debug(
-                "load_history_df(%s): %d bars from DB (requested %d)",
-                stock_code,
-                len(df),
-                days,
+        ranked_candidates = []
+        min_required = days if days <= 5 else max(int(days * 0.3), 5)
+        for candidate in candidates:
+            bars = db.get_data_range(candidate, start, end)
+            if not bars:
+                continue
+            latest = max(getattr(bar, "date", None) for bar in bars)
+            ranked_candidates.append(
+                (
+                    latest == end,
+                    latest,
+                    len(bars),
+                    candidate == normalized_code,
+                    candidate,
+                    bars,
+                )
             )
-            return df, "db_cache"
+
+        if ranked_candidates:
+            _is_fresh, latest, _count, _preferred, best_code, bars = max(ranked_candidates)
+            if latest == end and len(bars) >= min_required:
+                df = pd.DataFrame([bar.to_dict() for bar in bars])
+                if "code" in df.columns:
+                    df["code"] = best_code
+                logger.debug(
+                    "load_history_df(%s): %d bars from DB candidate=%s (requested %d)",
+                    stock_code,
+                    len(df),
+                    best_code,
+                    days,
+                )
+                return df, "db_cache"
+            logger.debug(
+                "load_history_df(%s): DB cache stale or insufficient (latest=%s, requested_end=%s, min_required=%s)",
+                stock_code,
+                latest,
+                end,
+                min_required,
+            )
     except Exception as exc:
         logger.debug("load_history_df(%s): DB read failed: %s", stock_code, exc)
 

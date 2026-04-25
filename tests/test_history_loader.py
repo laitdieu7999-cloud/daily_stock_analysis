@@ -23,7 +23,8 @@ def test_frozen_target_date_roundtrip():
 def test_load_history_df_prefers_db(monkeypatch):
     bars = [
         SimpleNamespace(
-            to_dict=lambda: {"date": "2026-04-24", "close": 10.0, "code": "600519"}
+            date=date(2026, 4, 25),
+            to_dict=lambda: {"date": "2026-04-25", "close": 10.0, "code": "600519"}
         )
         for _ in range(30)
     ]
