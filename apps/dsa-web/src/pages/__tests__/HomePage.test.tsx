@@ -294,13 +294,18 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
+    // Wait for the report to load
     await screen.findByText('趋势维持强势');
 
+    // Type something else in the search box
     const input = screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL');
     fireEvent.change(input, { target: { value: 'AAPL' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '重新分析' }));
+    // Click "Reanalyze"
+    const reanalyzeButton = screen.getByRole('button', { name: '重新分析' });
+    fireEvent.click(reanalyzeButton);
 
+    // Verify that analyzeAsync is called with the report's stock code, not the search box text
     expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
       stockCode: '600519',
       originalQuery: '600519',

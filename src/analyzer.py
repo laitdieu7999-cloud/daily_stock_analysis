@@ -21,6 +21,9 @@ import litellm
 from json_repair import repair_json
 from litellm import Router
 
+litellm.set_verbose = False
+litellm.suppress_debug_info = True
+
 from src.agent.llm_adapter import get_thinking_extra_body
 from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_ZH
 from src.config import (
@@ -29,6 +32,7 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
+    normalize_litellm_temperature,
     resolve_news_window_days,
 )
 from src.storage import persist_llm_usage
@@ -805,11 +809,13 @@ class GeminiAnalyzer:
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出"""
 
-    TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
+    TEXT_SYSTEM_PROMPT = """你是量化对冲基金的首席执行交易员，不是撰写长篇研报的分析师。
 
 - 回答必须基于用户提供的数据与上下文
-- 若信息不足，要明确指出不确定性
 - 不要编造价格、财报或新闻事实
+- 数据不足时，只允许直接说明“数据缺失，无法判断”
+- 结论必须短、硬、可执行，禁止空话、套话和两头堵表述
+- 不要复述原始表格、新闻原文或指标明细，直接给出最终动作结论
 """
 
     def __init__(
@@ -906,8 +912,21 @@ class GeminiAnalyzer:
                 .replace("{default_skill_policy_section}", default_skill_policy_section)
                 .replace("{skills_section}", skills_section)
             )
+        execution_discipline = """
+
+## 执行纪律（最高优先级）
+
+- 你现在的角色是首席执行交易员，不是写研报的分析师。
+- 继续严格输出既定 JSON 结构，但所有用户可见文字只保留最终结论，不复述原始数据、新闻原文或指标明细。
+- 禁止使用“可能”“或许”“建议关注”“存在一定风险”“谨慎乐观”等空泛措辞；若结论偏中性，直接说明等待条件。
+- `dashboard.core_conclusion.one_sentence` 必须短、硬、可执行，优先体现动作与触发条件。
+- `analysis_summary` 控制在 80 字以内，直接回答“现在该做什么、为何这样做”。
+- `key_points` 只保留 3-5 个短语，不写长句，不重复同一风险。
+- `operation_advice` 与 `position_advice.no_position/has_position` 必须动作优先，优先使用“买入/试探性建仓/观望/减仓/卖出/止损”等明确动作词。
+- 除非数据缺失，否则不要把“风险提示”和“核心结论”写成同义反复。
+"""
         if lang == "en":
-            return base_prompt + """
+            return base_prompt + execution_discipline + """
 
 ## Output Language (highest priority)
 
@@ -917,7 +936,7 @@ class GeminiAnalyzer:
 - Use the common English company name when you are confident; otherwise keep the original listed company name instead of inventing one.
 - This includes `stock_name`, `trend_prediction`, `operation_advice`, `confidence_level`, nested dashboard text, checklist items, and all narrative summaries.
 """
-        return base_prompt + """
+        return base_prompt + execution_discipline + """
 
 ## 输出语言（最高优先级）
 
@@ -1149,7 +1168,7 @@ class GeminiAnalyzer:
             or generation_config.get('max_tokens')
             or 8192
         )
-        temperature = generation_config.get('temperature', 0.7)
+        requested_temperature = generation_config.get('temperature', 0.1)
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -1162,16 +1181,21 @@ class GeminiAnalyzer:
         for model in models_to_try:
             try:
                 model_short = model.split("/")[-1] if "/" in model else model
+                extra = get_thinking_extra_body(model_short)
                 call_kwargs: Dict[str, Any] = {
                     "model": model,
                     "messages": [
                         {"role": "system", "content": effective_system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": temperature,
+                    "temperature": normalize_litellm_temperature(
+                        model,
+                        requested_temperature,
+                        model_list=config.llm_model_list,
+                        request_overrides={"extra_body": extra} if extra else None,
+                    ),
                     "max_tokens": max_tokens,
                 }
-                extra = get_thinking_extra_body(model_short)
                 if extra:
                     call_kwargs["extra_body"] = extra
 
@@ -1235,7 +1259,7 @@ class GeminiAnalyzer:
         self,
         prompt: str,
         max_tokens: int = 2048,
-        temperature: float = 0.7,
+        temperature: float = 0.1,
     ) -> Optional[str]:
         """Public entry point for free-form text generation.
 
@@ -1246,7 +1270,7 @@ class GeminiAnalyzer:
         Args:
             prompt:      Text prompt to send to the LLM.
             max_tokens:  Maximum tokens in the response (default 2048).
-            temperature: Sampling temperature (default 0.7).
+            temperature: Sampling temperature (default 0.1).
 
         Returns:
             Response text, or None if the LLM call fails (error is logged).

@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 from urllib.parse import urlparse
+from urllib.request import getproxies
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
@@ -50,6 +51,12 @@ class ConfigIssue:
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
 SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
+_FIXED_TEMPERATURE_LITELLM_MODELS: Dict[str, Dict[str, float]] = {
+    "kimi-k2.6": {
+        "thinking": 1.0,
+        "non_thinking": 0.6,
+    },
+}
 AGENT_MAX_STEPS_DEFAULT = 10
 NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
     "ultra_short": 1,
@@ -292,6 +299,145 @@ def get_configured_llm_models(model_list: List[Dict[str, Any]]) -> List[str]:
     return models
 
 
+def _resolve_litellm_model_list_entry(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the Router model_list entry matching the configured alias."""
+    normalized_model = (model or "").strip()
+    if not normalized_model or not model_list:
+        return None
+
+    for entry in model_list:
+        model_name = str(entry.get("model_name") or "").strip()
+        if not model_name:
+            params = entry.get("litellm_params", {}) or {}
+            model_name = str(params.get("model") or "").strip()
+        if model_name == normalized_model:
+            return entry
+    return None
+
+
+def resolve_litellm_wire_model(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Resolve a router alias to its underlying LiteLLM wire model."""
+    normalized_model = (model or "").strip()
+    if not normalized_model or not model_list:
+        return normalized_model
+
+    model_entry = _resolve_litellm_model_list_entry(normalized_model, model_list)
+    if not model_entry:
+        return normalized_model
+
+    params = model_entry.get("litellm_params", {}) or {}
+    wire_model = str(params.get("model") or "").strip()
+    return wire_model or normalized_model
+
+
+def _extract_thinking_config(payload: Optional[Dict[str, Any]]) -> Any:
+    """Extract a thinking-mode flag from LiteLLM-style request kwargs."""
+    if not isinstance(payload, dict):
+        return None
+    extra_body = payload.get("extra_body")
+    if isinstance(extra_body, dict) and "thinking" in extra_body:
+        return extra_body.get("thinking")
+    if "thinking" in payload:
+        return payload.get("thinking")
+    return None
+
+
+def _parse_thinking_enabled(value: Any) -> Optional[bool]:
+    """Parse thinking-mode config into True/False/unknown."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"enabled", "enable", "true", "1", "on", "thinking"}:
+            return True
+        if normalized in {"disabled", "disable", "false", "0", "off", "none", "non-thinking", "non_thinking"}:
+            return False
+        return None
+    if isinstance(value, dict):
+        if "enabled" in value:
+            return _parse_thinking_enabled(value.get("enabled"))
+        if "type" in value:
+            return _parse_thinking_enabled(value.get("type"))
+    return None
+
+
+def resolve_litellm_thinking_enabled(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[bool]:
+    """Resolve whether the outgoing LiteLLM request explicitly enables thinking."""
+    thinking_config = None
+    model_entry = _resolve_litellm_model_list_entry(model, model_list)
+    if model_entry:
+        thinking_config = _extract_thinking_config(model_entry)
+        entry_params = model_entry.get("litellm_params", {}) or {}
+        entry_thinking_config = _extract_thinking_config(entry_params)
+        if entry_thinking_config is not None:
+            thinking_config = entry_thinking_config
+
+    override_thinking_config = _extract_thinking_config(request_overrides)
+    if override_thinking_config is not None:
+        thinking_config = override_thinking_config
+    return _parse_thinking_enabled(thinking_config)
+
+
+def get_fixed_litellm_temperature(
+    model: str,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """Return a provider-mandated temperature for known strict models."""
+    normalized_model = resolve_litellm_wire_model(model, model_list).lower()
+    if not normalized_model:
+        return None
+
+    thinking_enabled = resolve_litellm_thinking_enabled(
+        model,
+        model_list=model_list,
+        request_overrides=request_overrides,
+    )
+    model_parts = [part for part in re.split(r"[/:\s]+", normalized_model) if part]
+    for model_name, temperatures in _FIXED_TEMPERATURE_LITELLM_MODELS.items():
+        if any(part == model_name or part.startswith(f"{model_name}-") for part in model_parts):
+            if thinking_enabled is False and temperatures.get("non_thinking") is not None:
+                return temperatures["non_thinking"]
+            if temperatures.get("thinking") is not None:
+                return temperatures["thinking"]
+            if temperatures.get("non_thinking") is not None:
+                return temperatures["non_thinking"]
+    return None
+
+
+def normalize_litellm_temperature(
+    model: str,
+    temperature: Optional[float],
+    *,
+    default: float = 0.1,
+    model_list: Optional[List[Dict[str, Any]]] = None,
+    request_overrides: Optional[Dict[str, Any]] = None,
+) -> float:
+    """Normalize temperature before sending a LiteLLM request."""
+    fixed_temperature = get_fixed_litellm_temperature(
+        model,
+        model_list=model_list,
+        request_overrides=request_overrides,
+    )
+    if fixed_temperature is not None:
+        return fixed_temperature
+    if temperature is None:
+        return default
+    return float(temperature)
+
+
 def resolve_unified_llm_temperature(model: str) -> float:
     """Resolve the unified LLM temperature with backward-compatible fallbacks."""
     llm_temperature_raw = os.getenv("LLM_TEMPERATURE")
@@ -325,7 +471,7 @@ def resolve_unified_llm_temperature(model: str) -> float:
             except (ValueError, TypeError):
                 continue
 
-    return 0.7
+    return 0.1
 
 
 def _get_litellm_provider(model: str) -> str:
@@ -449,7 +595,7 @@ class Config:
     litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
 
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
-    llm_temperature: float = 0.7
+    llm_temperature: float = 0.1
 
     # --- Multi-channel LLM config (new) ---
     # LITELLM_CONFIG: path to a standard litellm_config.yaml file (most powerful)
@@ -471,7 +617,7 @@ class Config:
     gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-3-flash-preview"  # 主模型
     gemini_model_fallback: str = "gemini-2.5-flash"  # 备选模型
-    gemini_temperature: float = 0.7  # 温度参数（0.0-2.0，控制输出随机性，默认0.7）
+    gemini_temperature: float = 0.1  # 温度参数（0.0-2.0，控制输出随机性，默认0.1）
 
     # Gemini API 请求配置（防止 429 限流）
     gemini_request_delay: float = 2.0  # 请求间隔（秒）
@@ -481,7 +627,7 @@ class Config:
     # Anthropic Claude API（备选，当 Gemini 不可用时使用）
     anthropic_api_key: Optional[str] = None
     anthropic_model: str = "claude-3-5-sonnet-20241022"  # Claude model name
-    anthropic_temperature: float = 0.7  # Anthropic temperature (0.0-1.0, default 0.7)
+    anthropic_temperature: float = 0.1  # Anthropic temperature (0.0-1.0, default 0.1)
     anthropic_max_tokens: int = 8192  # Max tokens for Anthropic responses
 
     # OpenAI 兼容 API（备选，当 Gemini/Anthropic 不可用时使用）
@@ -489,7 +635,7 @@ class Config:
     openai_base_url: Optional[str] = None  # 如: https://api.openai.com/v1
     openai_model: str = "gpt-4o-mini"  # OpenAI 兼容模型名称
     openai_vision_model: Optional[str] = None  # Deprecated: use VISION_MODEL instead
-    openai_temperature: float = 0.7  # OpenAI 温度参数（0.0-2.0，默认0.7）
+    openai_temperature: float = 0.1  # OpenAI 温度参数（0.0-2.0，默认0.1）
 
     # === Vision 配置 ===
     # VISION_MODEL: litellm model string used for image understanding calls.
@@ -505,6 +651,8 @@ class Config:
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
     brave_api_keys: List[str] = field(default_factory=list)  # Brave Search API Keys
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
+    jin10_api_key: str = ""  # 金十数据 API Key（通过 MCP 协议获取财经快讯）
+    jin10_x_token: str = ""  # Jin10 Web 登录态 x-token（用于会员盯盘接口，可选）
     searxng_base_urls: List[str] = field(default_factory=list)  # SearXNG instance URLs (self-hosted, no quota)
     searxng_public_instances_enabled: bool = True  # Auto-discover public SearXNG instances when base URLs are absent
 
@@ -537,6 +685,11 @@ class Config:
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
+    intraday_snapshot_enabled: bool = False  # Enable lightweight intraday snapshot collection for replay
+    intraday_snapshot_interval_minutes: int = 5  # Snapshot polling interval
+    market_daily_push_enabled: bool = True  # Enable daily gold/silver/CSI500 push before stock analysis
+    market_daily_push_ai_enabled: bool = True  # Enable LLM short commentary for market daily push
+    external_tactical_report_path: str = "reports/gemini_daily.md,reports/gemini_black_swan.md"  # Optional local tactical report cache(s), comma-separated
 
     # === 通知配置（可同时配置多个，全部推送）===
     
@@ -664,6 +817,10 @@ class Config:
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     schedule_run_immediately: bool = True     # 启动时是否立即执行一次
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
+    close_reminder_enabled: bool = False      # 是否启用收盘提醒
+    close_reminder_time: str = "15:10"        # 收盘提醒时间（HH:MM 格式）
+    enable_metaphysical_features: bool = False  # 是否启用玄学/星象研究特征
+    metaphysical_cache_dir: str = "./data/metaphysical_cache"  # 玄学特征缓存目录
     market_review_enabled: bool = True        # 是否启用大盘复盘
     # 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户
     market_review_region: str = "cn"
@@ -842,9 +999,23 @@ class Config:
         setup_env()
 
         # === 智能代理配置 (关键修复) ===
-        # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败
-        http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
-        if http_proxy:
+        # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败。
+        # 这里不仅检查环境变量，还检查 macOS 系统代理（urllib.getproxies），因为
+        # requests/urllib3 会在本机代理开启时自动继承系统代理，而不会自动补全 NO_PROXY。
+        detected_proxies = getproxies()
+        http_proxy = (
+            os.getenv('HTTP_PROXY')
+            or os.getenv('http_proxy')
+            or detected_proxies.get('http')
+            or detected_proxies.get('https')
+        )
+        https_proxy = (
+            os.getenv('HTTPS_PROXY')
+            or os.getenv('https_proxy')
+            or detected_proxies.get('https')
+            or detected_proxies.get('http')
+        )
+        if http_proxy or https_proxy:
             # 国内金融数据源域名列表
             domestic_domains = [
                 'eastmoney.com',   # 东方财富 (Efinance/Akshare)
@@ -872,12 +1043,12 @@ class Config:
             os.environ['NO_PROXY'] = final_no_proxy
             os.environ['no_proxy'] = final_no_proxy
 
-            # 确保 HTTP_PROXY 也被正确设置（以防仅在 .env 中定义但未导出）
-            os.environ['HTTP_PROXY'] = http_proxy
-            os.environ['http_proxy'] = http_proxy
+            # 确保 HTTP(S)_PROXY 也被正确设置（系统代理场景下原本只有 getproxies 可见，
+            # requests/urllib3 后续更稳定地读取 os.environ）。
+            if http_proxy:
+                os.environ['HTTP_PROXY'] = http_proxy
+                os.environ['http_proxy'] = http_proxy
 
-            # HTTPS_PROXY 同理
-            https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
             if https_proxy:
                 os.environ['HTTPS_PROXY'] = https_proxy
                 os.environ['https_proxy'] = https_proxy
@@ -934,6 +1105,7 @@ class Config:
 
         # LITELLM_MODEL: explicit config takes precedence; else infer from available keys
         litellm_model = os.getenv('LITELLM_MODEL', '').strip()
+        inferred_legacy_deepseek_model = False
         if not litellm_model:
             _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview').strip()
             _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022').strip()
@@ -944,6 +1116,7 @@ class Config:
                 litellm_model = f'anthropic/{_anthropic_model_name}'
             elif deepseek_api_keys:
                 litellm_model = 'deepseek/deepseek-chat'
+                inferred_legacy_deepseek_model = True
             elif openai_api_keys:
                 # For openai-compatible models, add prefix only if not already prefixed
                 if '/' not in _openai_model_name:
@@ -997,6 +1170,17 @@ class Config:
             if llm_model_list:
                 llm_models_source = "legacy_env"
 
+        if (
+            inferred_legacy_deepseek_model
+            and llm_models_source == "legacy_env"
+            and litellm_model == 'deepseek/deepseek-chat'
+        ):
+            logger.warning(
+                "Deprecation warning:\n"
+                "deepseek-chat will be deprecated on 2026-07-24,\n"
+                "please migrate to deepseek-v4-flash."
+            )
+
         # Auto-infer LITELLM_MODEL from channels when not explicitly set
         if not litellm_model and llm_channels:
             for _ch in llm_channels:
@@ -1039,6 +1223,9 @@ class Config:
 
         brave_keys_str = os.getenv('BRAVE_API_KEYS', '')
         brave_api_keys = [k.strip() for k in brave_keys_str.split(',') if k.strip()]
+
+        jin10_api_key = os.getenv('JIN10_API_KEY', '').strip()
+        jin10_x_token = os.getenv('JIN10_X_TOKEN', '').strip()
 
         _raw_urls = [u.strip() for u in os.getenv('SEARXNG_BASE_URLS', '').split(',') if u.strip()]
         searxng_base_urls = []
@@ -1129,13 +1316,13 @@ class Config:
             gemini_api_key=os.getenv('GEMINI_API_KEY'),
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
             gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
-            gemini_temperature=parse_env_float(os.getenv('GEMINI_TEMPERATURE'), 0.7, field_name='GEMINI_TEMPERATURE'),
+            gemini_temperature=parse_env_float(os.getenv('GEMINI_TEMPERATURE'), 0.1, field_name='GEMINI_TEMPERATURE'),
             gemini_request_delay=parse_env_float(os.getenv('GEMINI_REQUEST_DELAY'), 2.0, field_name='GEMINI_REQUEST_DELAY', minimum=0.0),
             gemini_max_retries=parse_env_int(os.getenv('GEMINI_MAX_RETRIES'), 5, field_name='GEMINI_MAX_RETRIES', minimum=0),
             gemini_retry_delay=parse_env_float(os.getenv('GEMINI_RETRY_DELAY'), 5.0, field_name='GEMINI_RETRY_DELAY', minimum=0.0),
             anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
             anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022'),
-            anthropic_temperature=parse_env_float(os.getenv('ANTHROPIC_TEMPERATURE'), 0.7, field_name='ANTHROPIC_TEMPERATURE'),
+            anthropic_temperature=parse_env_float(os.getenv('ANTHROPIC_TEMPERATURE'), 0.1, field_name='ANTHROPIC_TEMPERATURE'),
             anthropic_max_tokens=parse_env_int(os.getenv('ANTHROPIC_MAX_TOKENS'), 8192, field_name='ANTHROPIC_MAX_TOKENS', minimum=1),
             # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
             # Within the OpenAI-compatible layer: AIHUBMIX_KEY takes priority over OPENAI_API_KEY.
@@ -1149,7 +1336,7 @@ class Config:
             ),  # noqa: E501
             openai_model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
             openai_vision_model=os.getenv('OPENAI_VISION_MODEL') or None,
-            openai_temperature=parse_env_float(os.getenv('OPENAI_TEMPERATURE'), 0.7, field_name='OPENAI_TEMPERATURE'),
+            openai_temperature=parse_env_float(os.getenv('OPENAI_TEMPERATURE'), 0.1, field_name='OPENAI_TEMPERATURE'),
             # Vision model: VISION_MODEL > OPENAI_VISION_MODEL (alias) > default
             vision_model=(
                 os.getenv('VISION_MODEL')
@@ -1163,6 +1350,8 @@ class Config:
             tavily_api_keys=tavily_api_keys,
             brave_api_keys=brave_api_keys,
             serpapi_keys=serpapi_keys,
+            jin10_api_key=jin10_api_key,
+            jin10_x_token=jin10_x_token,
             searxng_base_urls=searxng_base_urls,
             searxng_public_instances_enabled=searxng_public_instances_enabled,
             social_sentiment_api_key=os.getenv('SOCIAL_SENTIMENT_API_KEY') or None,
@@ -1222,6 +1411,28 @@ class Config:
                 minimum=1,
             ),
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            intraday_snapshot_enabled=parse_env_bool(
+                os.getenv('INTRADAY_SNAPSHOT_ENABLED'),
+                default=False,
+            ),
+            intraday_snapshot_interval_minutes=parse_env_int(
+                os.getenv('INTRADAY_SNAPSHOT_INTERVAL_MINUTES'),
+                5,
+                field_name='INTRADAY_SNAPSHOT_INTERVAL_MINUTES',
+                minimum=1,
+            ),
+            market_daily_push_enabled=parse_env_bool(
+                os.getenv('MARKET_DAILY_PUSH_ENABLED'),
+                default=True,
+            ),
+            market_daily_push_ai_enabled=parse_env_bool(
+                os.getenv('MARKET_DAILY_PUSH_AI_ENABLED'),
+                default=True,
+            ),
+            external_tactical_report_path=os.getenv(
+                'EXTERNAL_TACTICAL_REPORT_PATH',
+                'reports/gemini_daily.md,reports/gemini_black_swan.md',
+            ),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
@@ -1328,6 +1539,19 @@ class Config:
             schedule_time=(schedule_time_value or '18:00').strip() or '18:00',
             schedule_run_immediately=schedule_run_immediately,
             run_immediately=legacy_run_immediately,
+            close_reminder_enabled=parse_env_bool(
+                os.getenv('CLOSE_REMINDER_ENABLED'),
+                default=False,
+            ),
+            close_reminder_time=(os.getenv('CLOSE_REMINDER_TIME', '15:10').strip() or '15:10'),
+            enable_metaphysical_features=parse_env_bool(
+                os.getenv('ENABLE_METAPHYSICAL_FEATURES'),
+                default=False,
+            ),
+            metaphysical_cache_dir=(
+                os.getenv('METAPHYSICAL_CACHE_DIR', './data/metaphysical_cache').strip()
+                or './data/metaphysical_cache'
+            ),
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             market_review_region=cls._parse_market_review_region(
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
@@ -1917,6 +2141,7 @@ class Config:
             or self.tavily_api_keys
             or self.brave_api_keys
             or self.serpapi_keys
+            or self.jin10_api_key
             or self.has_searxng_enabled()
         )
 
@@ -2162,6 +2387,42 @@ class Config:
                 severity="info",
                 message="未配置搜索引擎能力 (Bocha/MiniMax/Tavily/Brave/SerpAPI/SearXNG)，新闻搜索功能将不可用",
                 field="BOCHA_API_KEYS",
+            ))
+
+        # --- Custom extension toggles / schedule fields ---
+        _time_pattern = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
+        if not _time_pattern.fullmatch((self.schedule_time or "").strip()):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=f"SCHEDULE_TIME 格式无效：{self.schedule_time!r}，建议使用 HH:MM 24 小时制",
+                field="SCHEDULE_TIME",
+            ))
+
+        if self.close_reminder_enabled and not _time_pattern.fullmatch((self.close_reminder_time or "").strip()):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=(
+                    f"CLOSE_REMINDER_TIME 格式无效：{self.close_reminder_time!r}。"
+                    "收盘提醒已启用，但该时间应为 HH:MM 24 小时制"
+                ),
+                field="CLOSE_REMINDER_TIME",
+            ))
+
+        if self.market_daily_push_enabled and not self.market_daily_push_ai_enabled:
+            issues.append(ConfigIssue(
+                severity="info",
+                message="已关闭每日市场推送的 AI 短评，仅保留结构化技术分析结果",
+                field="MARKET_DAILY_PUSH_AI_ENABLED",
+            ))
+
+        if self.enable_metaphysical_features:
+            issues.append(ConfigIssue(
+                severity="info",
+                message=(
+                    "已启用玄学/星象研究特征。该能力当前更适合研究与回测，"
+                    "建议不要直接作为生产交易结论的唯一依据"
+                ),
+                field="ENABLE_METAPHYSICAL_FEATURES",
             ))
 
         # --- Notification channels ---

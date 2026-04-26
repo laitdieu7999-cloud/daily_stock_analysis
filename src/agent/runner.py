@@ -654,8 +654,8 @@ def _execute_tools(
         timeout_triggered = False
         if tool_wait_timeout_seconds and tool_wait_timeout_seconds > 0:
             pool = ThreadPoolExecutor(max_workers=1)
+            ctx = contextvars.copy_context()
             try:
-                ctx = contextvars.copy_context()
                 future = pool.submit(ctx.run, _exec_single, tc)
                 try:
                     _, result_str, success, dur, cached = future.result(timeout=tool_wait_timeout_seconds)
@@ -698,9 +698,7 @@ def _execute_tools(
         pool = ThreadPoolExecutor(max_workers=min(len(tool_calls), 5))
         timeout_triggered = False
         try:
-            futures = {
-                pool.submit(contextvars.copy_context().run, _exec_single, tc): tc for tc in tool_calls
-            }
+            futures = {pool.submit(contextvars.copy_context().run, _exec_single, tc): tc for tc in tool_calls}
             pending = set(futures)
             for future in as_completed(
                 futures,

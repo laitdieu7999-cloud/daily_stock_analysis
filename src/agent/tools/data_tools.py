@@ -54,6 +54,7 @@ def _get_db():
 
 
 def _normalize_history_days(days: Any) -> Tuple[int, Dict[str, Any]]:
+    """Normalize LLM-provided history window and return response metadata."""
     requested_days = days
     warning = None
     try:
@@ -87,6 +88,7 @@ def _normalize_history_days(days: Any) -> Tuple[int, Dict[str, Any]]:
 
 
 def _history_code_candidates(stock_code: str) -> Tuple[List[str], str]:
+    """Return cache lookup candidates plus canonical write code."""
     from data_provider.base import canonical_stock_code, normalize_stock_code
 
     raw_code = str(stock_code or "").strip()
@@ -288,8 +290,8 @@ get_realtime_quote_tool = ToolDefinition(
 def _handle_get_daily_history(stock_code: str, days: int = 60) -> dict:
     """Get daily OHLCV history data."""
     effective_days, metadata = _normalize_history_days(days)
-    from src.services.history_loader import load_history_df
 
+    from src.services.history_loader import load_history_df
     df, source = load_history_df(stock_code, days=effective_days)
 
     if df is None or df.empty:

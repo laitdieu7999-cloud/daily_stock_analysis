@@ -111,7 +111,7 @@ FEISHU_APP_SECRET=...
 
 如果你在飞书自动化流程里消费本项目推送的卡片消息，请按下面配置：
 
-1. 在创建 Webhook 触发器时，参数填写下面 JSON（`content` 可按需保留占位符）：
+1. 在创建 Webhook 触发器时，**参数** 填写下面 JSON（`content` 可按需保留占位符）：
 
 ```json
 {
@@ -137,7 +137,7 @@ FEISHU_APP_SECRET=...
 }
 ```
 
-2. 在 操作/消息内容 部分，不要手填纯文本；点击加号选择 Webhook 触发，并映射到：
+2. 在 **操作/消息内容** 部分，不要手填纯文本；点击加号选择 **Webhook 触发**，并映射到：
 
 `card.elements[0].text.content`
 

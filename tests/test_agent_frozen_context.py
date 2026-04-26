@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Verify that runner._execute_tools propagates ContextVar state."""
-
+"""Verify that runner._execute_tools propagates ContextVar state (Issue #1066)."""
 from __future__ import annotations
 
 import json
@@ -17,6 +16,8 @@ from src.services.history_loader import (
 
 
 class _FakeToolCall:
+    """Minimal stand-in for the ToolCall dataclass used by runner."""
+
     def __init__(self, name: str, arguments: dict | None = None):
         self.name = name
         self.arguments = arguments or {}
@@ -24,6 +25,8 @@ class _FakeToolCall:
 
 
 def _make_spy_registry(tool_names: list[str], observed: list):
+    """Build a ToolRegistry with spy tools that record frozen_target_date."""
+
     def _spy_handler(**kwargs):
         observed.append(get_frozen_target_date())
         return json.dumps({"ok": True})
@@ -36,7 +39,10 @@ def _make_spy_registry(tool_names: list[str], observed: list):
 
 
 class ExecuteToolsFrozenContextTestCase(unittest.TestCase):
+    """Test ContextVar propagation through _execute_tools ThreadPoolExecutor."""
+
     def test_contextvar_propagates_to_single_tool_thread(self):
+        """Single-tool path with timeout uses copy_context().run()."""
         from src.agent.runner import _execute_tools
 
         frozen_date = date(2026, 4, 15)
@@ -61,6 +67,12 @@ class ExecuteToolsFrozenContextTestCase(unittest.TestCase):
         self.assertEqual(observed[0], frozen_date)
 
     def test_contextvar_propagates_to_parallel_tool_threads(self):
+        """Multi-tool path propagates ContextVar to all concurrent worker threads.
+
+        Uses a Barrier to force genuine overlap: every spy handler blocks
+        until all workers have entered ctx.run(), so if a shared Context
+        were reused the second enter would raise RuntimeError.
+        """
         from src.agent.runner import _execute_tools
 
         frozen_date = date(2026, 4, 16)
@@ -95,3 +107,7 @@ class ExecuteToolsFrozenContextTestCase(unittest.TestCase):
 
         self.assertEqual(len(observed), num_tools)
         self.assertTrue(all(d == frozen_date for d in observed))
+
+
+if __name__ == "__main__":
+    unittest.main()

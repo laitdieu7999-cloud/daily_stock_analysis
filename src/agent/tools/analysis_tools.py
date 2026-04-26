@@ -196,8 +196,8 @@ calculate_ma_tool = ToolDefinition(
 
 def _handle_get_volume_analysis(stock_code: str, days: int = 30) -> dict:
     """Analyse volume-price patterns over recent trading days."""
-    import pandas as pd
     from src.services.history_loader import load_history_df
+    import pandas as pd
 
     df, source = load_history_df(stock_code, days=max(days + 20, 60))
 
@@ -312,7 +312,6 @@ get_volume_analysis_tool = ToolDefinition(
 
 def _handle_analyze_pattern(stock_code: str, days: int = 60) -> dict:
     """Detect common candlestick and chart patterns in recent price history."""
-    import pandas as pd
     from src.services.history_loader import load_history_df
 
     df, source = load_history_df(stock_code, days=max(days, 120))
