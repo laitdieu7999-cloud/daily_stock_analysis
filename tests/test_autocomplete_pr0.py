@@ -47,7 +47,7 @@ class TestAnalyzeRequest:
     def test_analyze_request_validation_selection_source(self):
         """Test selection_source field validation"""
         # Valid selection_source values
-        for source in ["manual", "autocomplete", "import", "image"]:
+        for source in ["manual", "autocomplete", "import", "image", "portfolio"]:
             request = AnalyzeRequest(
                 stock_code="600519",
                 selection_source=source,

@@ -302,6 +302,8 @@ class BacktestResult(Base):
     # 建议快照（避免未来分析字段变化导致回测不可解释）
     operation_advice = Column(String(20))
     position_recommendation = Column(String(8))  # long/cash
+    ranking_score = Column(Float)
+    score_source = Column(String(32))
 
     # 价格与收益
     start_price = Column(Float)

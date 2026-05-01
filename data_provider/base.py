@@ -30,10 +30,27 @@ from .fundamental_adapter import AkshareFundamentalAdapter
 
 # 配置日志
 logger = logging.getLogger(__name__)
+_FETCHER_PRIORITY_INFO_LOGGED = False
 
 
 # === 标准化列名定义 ===
 STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+
+# 明确按指数处理的宽基代码。这里不把 000001/000016 等容易与股票重名的
+# 代码放入强制路由，避免用户想看个股时被误导。
+CN_INDEX_NAME_MAP = {
+    "000300": "沪深300指数",
+    "000905": "中证500指数",
+    "399001": "深证成指",
+    "399006": "创业板指",
+}
+
+CN_INDEX_SYMBOL_MAP = {
+    "000300": "sh000300",
+    "000905": "sh000905",
+    "399001": "sz399001",
+    "399006": "sz399006",
+}
 
 
 def unwrap_exception(exc: Exception) -> Exception:
@@ -86,6 +103,10 @@ def normalize_stock_code(stock_code: str) -> str:
     code = stock_code.strip()
     upper = code.upper()
 
+    # 用户配置里常用 NDX100 表示纳斯达克100；统一归一到已有 NDX 指数路由。
+    if upper == "NDX100":
+        return "NDX"
+
     # Normalize HK prefix to a canonical 5-digit form (e.g. hk1810 -> HK01810)
     if upper.startswith('HK') and not upper.startswith('HK.'):
         candidate = upper[2:]
@@ -117,6 +138,19 @@ def normalize_stock_code(stock_code: str) -> str:
 
 
 ETF_PREFIXES = ("51", "52", "56", "58", "15", "16", "18")
+
+
+def is_cn_index_code(code: str) -> bool:
+    """判断是否为系统明确支持的 A 股宽基指数代码。"""
+    return normalize_stock_code(code) in CN_INDEX_SYMBOL_MAP
+
+
+def _normalize_cn_index_quote_code(code: Any) -> str:
+    """Normalize quote codes like sh000905/sz399001 to six-digit index code."""
+    text = str(code or "").strip().lower()
+    if text.startswith(("sh", "sz")) and len(text) >= 8:
+        text = text[2:]
+    return normalize_stock_code(text)
 
 
 def _is_us_market(code: str) -> bool:
@@ -890,7 +924,12 @@ class DataFetcherManager:
 
         # 构建优先级说明
         priority_info = ", ".join([f"{f.name}(P{f.priority})" for f in self._get_fetchers_snapshot()])
-        logger.info(f"已初始化 {len(self._fetchers)} 个数据源（按优先级）: {priority_info}")
+        global _FETCHER_PRIORITY_INFO_LOGGED
+        if not _FETCHER_PRIORITY_INFO_LOGGED:
+            logger.info(f"已初始化 {len(self._fetchers)} 个数据源（按优先级）: {priority_info}")
+            _FETCHER_PRIORITY_INFO_LOGGED = True
+        else:
+            logger.debug(f"已初始化 {len(self._fetchers)} 个数据源（按优先级）: {priority_info}")
     
     def add_fetcher(self, fetcher: BaseFetcher) -> None:
         """添加数据源并重新排序"""
@@ -898,6 +937,91 @@ class DataFetcherManager:
         with self._fetchers_lock:
             self._fetchers.append(fetcher)
             self._fetchers.sort(key=lambda f: f.priority)
+
+    def _get_cn_index_daily_data(
+        self,
+        stock_code: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        days: int = 30,
+    ) -> Tuple[pd.DataFrame, str]:
+        """Fetch A-share broad index daily data without falling through to same-code stocks."""
+        import akshare as ak
+
+        symbol = CN_INDEX_SYMBOL_MAP[stock_code]
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        if start_date is None:
+            from datetime import timedelta
+
+            start_dt = datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=days * 2)
+            start_date = start_dt.strftime("%Y-%m-%d")
+
+        logger.info(f"[指数数据] 获取 {CN_INDEX_NAME_MAP.get(stock_code, stock_code)}({stock_code}) 日线: {symbol}")
+        try:
+            raw_df = ak.stock_zh_index_daily(symbol=symbol)
+        except Exception as exc:
+            error_type, error_reason = summarize_exception(exc)
+            raise DataFetchError(f"A股指数 {stock_code} 获取失败: ({error_type}) {error_reason}") from exc
+
+        if raw_df is None or raw_df.empty:
+            raise DataFetchError(f"A股指数 {stock_code} 未获取到日线数据")
+
+        df = raw_df.copy()
+        if "date" not in df.columns and "日期" not in df.columns:
+            df = df.reset_index()
+
+        df = df.rename(
+            columns={
+                "index": "date",
+                "日期": "date",
+                "开盘": "open",
+                "收盘": "close",
+                "最高": "high",
+                "最低": "low",
+                "成交量": "volume",
+                "成交额": "amount",
+                "涨跌幅": "pct_chg",
+            }
+        )
+
+        required = ["date", "open", "high", "low", "close"]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            raise DataFetchError(f"A股指数 {stock_code} 返回字段缺失: {missing}")
+
+        if "volume" not in df.columns:
+            df["volume"] = 0
+        if "amount" not in df.columns:
+            df["amount"] = 0.0
+        if "pct_chg" not in df.columns:
+            df["pct_chg"] = pd.to_numeric(df["close"], errors="coerce").pct_change().fillna(0) * 100
+
+        df["date"] = pd.to_datetime(df["date"])
+        start_ts = pd.to_datetime(start_date)
+        end_ts = pd.to_datetime(end_date)
+        df = df[(df["date"] >= start_ts) & (df["date"] <= end_ts)]
+
+        df["code"] = stock_code
+        df = df[["code"] + STANDARD_COLUMNS]
+
+        numeric_cols = ["open", "high", "low", "close", "volume", "amount", "pct_chg"]
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["close", "volume"]).sort_values("date", ascending=True).reset_index(drop=True)
+
+        if df.empty:
+            raise DataFetchError(f"A股指数 {stock_code} 在指定日期范围内无日线数据")
+
+        df["ma5"] = df["close"].rolling(window=5, min_periods=1).mean()
+        df["ma10"] = df["close"].rolling(window=10, min_periods=1).mean()
+        df["ma20"] = df["close"].rolling(window=20, min_periods=1).mean()
+        avg_volume_5 = df["volume"].rolling(window=5, min_periods=1).mean()
+        df["volume_ratio"] = (df["volume"] / avg_volume_5.shift(1)).fillna(1.0)
+        for col in ["ma5", "ma10", "ma20", "volume_ratio"]:
+            df[col] = df[col].round(2)
+
+        return df, "AkshareIndexFetcher"
     
     def get_daily_data(
         self, 
@@ -937,6 +1061,15 @@ class DataFetcherManager:
         errors = []
         total_fetchers = len(fetchers)
         request_start = time.time()
+
+        # 快速路径：A 股宽基指数使用指数专用接口，避免 000905 等代码被普通股票源误识别。
+        if is_cn_index_code(stock_code):
+            return self._get_cn_index_daily_data(
+                stock_code,
+                start_date=start_date,
+                end_date=end_date,
+                days=days,
+            )
 
         # 快速路径：美股/港股使用专用数据源路由
         #   - 配置长桥凭据后: Longbridge 为首选, YFinance/AkShare 兜底
@@ -1146,7 +1279,7 @@ class DataFetcherManager:
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
 
-        from .akshare_fetcher import _is_us_code
+        from .akshare_fetcher import _is_etf_code, _is_us_code
         from .us_index_mapping import is_us_index_code
         from src.config import get_config
 
@@ -1155,6 +1288,14 @@ class DataFetcherManager:
         # 如果实时行情功能被禁用，直接返回 None
         if not config.enable_realtime_quote:
             logger.debug(f"[实时行情] 功能已禁用，跳过 {stock_code}")
+            return None
+
+        if is_cn_index_code(stock_code):
+            quote = self._get_cn_index_realtime_quote(stock_code)
+            if quote is not None:
+                return quote
+            if log_final_failure:
+                logger.info(f"[实时行情] A股指数 {stock_code} 无可用数据源")
             return None
 
         # ----------------------------------------------------------
@@ -1184,7 +1325,7 @@ class DataFetcherManager:
 
             primary_quote = self._try_fetcher_quote(stock_code, primary_src, **primary_kw)
             if primary_quote is not None:
-                logger.info(f"[实时行情] {market_label} {stock_code} 成功获取 (来源: {primary_src})")
+                logger.debug(f"[实时行情] {market_label} {stock_code} 成功获取 (来源: {primary_src})")
             primary_quote = self._supplement_quote(
                 stock_code, primary_quote, secondary_src, **secondary_kw,
             )
@@ -1194,8 +1335,17 @@ class DataFetcherManager:
                 logger.info(f"[实时行情] {market_label} {stock_code} 无可用数据源")
             return None
         
-        # 获取配置的数据源优先级
+        # 获取配置的数据源优先级。ETF 盘中行情优先使用轻量直连源，
+        # 避免先触发东方财富/akshare 批量接口的 WAF 和熔断。
         source_priority = config.realtime_source_priority.split(',')
+        is_etf_realtime = _is_etf_code(stock_code)
+        if is_etf_realtime:
+            preferred_etf_sources = ["tencent", "akshare_sina"]
+            source_priority = preferred_etf_sources + [
+                source
+                for source in source_priority
+                if source.strip().lower() not in set(preferred_etf_sources)
+            ]
         
         errors = []
         # primary_quote holds the first successful result; we may supplement
@@ -1252,7 +1402,9 @@ class DataFetcherManager:
                     if primary_quote is None:
                         # First successful source becomes primary
                         primary_quote = quote
-                        logger.info(f"[实时行情] {stock_code} 成功获取 (来源: {source})")
+                        logger.debug(f"[实时行情] {stock_code} 成功获取 (来源: {source})")
+                        if is_etf_realtime and source in ("tencent", "akshare_sina"):
+                            return primary_quote
                         # If all key supplementary fields are present, return early
                         if not self._quote_needs_supplement(primary_quote):
                             return primary_quote
@@ -1288,6 +1440,44 @@ class DataFetcherManager:
                 logger.info(f"[实时行情] {stock_code} 所有数据源均失败: {'; '.join(errors)}")
             else:
                 logger.info(f"[实时行情] {stock_code} 无可用数据源")
+
+        return None
+
+    def _get_cn_index_realtime_quote(self, stock_code: str):
+        """Fetch realtime quote for supported A-share indices from the index hub."""
+        from .realtime_types import RealtimeSource, UnifiedRealtimeQuote, safe_float, safe_int
+
+        index_name = CN_INDEX_NAME_MAP.get(stock_code, stock_code)
+        try:
+            indices = self.get_main_indices(region="cn")
+        except Exception as exc:
+            logger.debug(f"[实时行情] A股指数 {stock_code} 获取失败: {exc}")
+            return None
+
+        for item in indices or []:
+            item_code = _normalize_cn_index_quote_code(item.get("code"))
+            if item_code != stock_code:
+                continue
+
+            price = safe_float(item.get("current") or item.get("price"))
+            if price is None or price <= 0:
+                return None
+
+            return UnifiedRealtimeQuote(
+                code=stock_code,
+                name=str(item.get("name") or index_name),
+                source=RealtimeSource.FALLBACK,
+                price=price,
+                change_pct=safe_float(item.get("change_pct")),
+                change_amount=safe_float(item.get("change")),
+                volume=safe_int(item.get("volume")),
+                amount=safe_float(item.get("amount")),
+                amplitude=safe_float(item.get("amplitude")),
+                open_price=safe_float(item.get("open")),
+                high=safe_float(item.get("high")),
+                low=safe_float(item.get("low")),
+                pre_close=safe_float(item.get("prev_close") or item.get("pre_close")),
+            )
 
         return None
 
@@ -1464,6 +1654,10 @@ class DataFetcherManager:
         stock_code = normalize_stock_code(stock_code)
         static_name = STOCK_NAME_MAP.get(stock_code)
 
+        # 明确的宽基指数名称优先级高于缓存，避免 000905 被历史缓存成同代码股票。
+        if is_cn_index_code(stock_code) and is_meaningful_stock_name(static_name, stock_code):
+            return self._cache_stock_name(stock_code, static_name) or static_name
+
         # 1. 先检查缓存
         cached_name = self._get_cached_stock_name(stock_code)
         if cached_name is not None:
@@ -1489,7 +1683,9 @@ class DataFetcherManager:
         from .akshare_fetcher import _is_us_code
         is_us = _is_us_code(stock_code)
         _US_CAPABLE_FETCHERS = {"YfinanceFetcher", "LongbridgeFetcher"}
-        for fetcher in self._get_fetchers_snapshot():
+        fetchers = self._get_fetchers_snapshot()
+        fetchers = sorted(fetchers, key=lambda fetcher: 1 if getattr(fetcher, "name", "") == "PytdxFetcher" else 0)
+        for fetcher in fetchers:
             if not hasattr(fetcher, 'get_stock_name'):
                 continue
             if is_us and fetcher.name not in _US_CAPABLE_FETCHERS:
@@ -1573,6 +1769,12 @@ class DataFetcherManager:
         self._ensure_concurrency_guards()
         with self._stock_name_cache_lock:
             for code in stock_codes:
+                static_name = STOCK_NAME_MAP.get(code)
+                if is_cn_index_code(code) and is_meaningful_stock_name(static_name, code):
+                    result[code] = static_name
+                    self._stock_name_cache[code] = static_name
+                    missing_codes.discard(code)
+                    continue
                 cached_name = self._stock_name_cache.get(code)
                 if cached_name is not None:
                     result[code] = cached_name

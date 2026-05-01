@@ -6,7 +6,8 @@
 
 - React UI（Vite 构建）由本地 FastAPI 服务托管
 - Electron 启动时自动拉起后端服务，等待 `/api/health` 就绪后加载 UI
-- 用户配置文件 `.env` 和数据库放在 exe 同级目录（便携模式）
+- Windows 安装/免安装模式下，用户配置文件 `.env` 和数据库放在 exe 同级目录（便携模式）
+- macOS 打包态下，用户配置文件 `.env`、数据库和日志放在用户目录的 `Application Support/Daily Stock Analysis` 中，避免写入 `.app` 包内部导致升级丢配置
 
 ## 本地开发
 
@@ -114,6 +115,18 @@ npm run build
 
 打包产物位于 `apps/dsa-desktop/dist/`。Windows 安装器会生成 `*Setup*.exe`，安装向导中可选择安装目录。
 
+### macOS 本机安装 / 更新
+
+本机测试时不要手动把旧版 `/Applications/股票分析桌面端.app` 改名为 `.backup-*` 再复制新版；Finder 会把每个 `.app.backup-*` 都当作独立应用显示，导致“应用程序”里出现一堆重复图标。
+
+统一使用安装脚本：
+
+```bash
+bash scripts/install-desktop-macos.sh
+```
+
+该脚本会把旧版应用临时移到 `/tmp`，新版复制成功后自动删除临时备份，并清理 `/Applications` 中历史遗留的 `股票分析桌面端.app.backup-*` / `broken-*` / `pre-*` 副本。复制失败时会恢复旧版应用。
+
 ## 目录结构
 
 Windows 安装包模式下，安装器仅支持当前用户安装且已禁用管理员提权，用户可在安装向导中选择安装目录；安装器会在安装器层面阻止选择 `Program Files`、`Windows` 等系统保护目录（选择时"下一步"按钮自动禁用），安装完成后，应用会在安装目录旁生成/读取 `.env`、`data/stock_analysis.db` 和 `logs/desktop.log`。请保留默认的 per-user 安装位置或选择其他用户可写目录。
@@ -138,7 +151,8 @@ win-unpacked/
 
 - `.env` 放在 exe 同目录下
 - 首次启动时自动从 `.env.example` 复制生成
-- macOS 打包态下，`exe` 实际位于 `.app` 包内部，因此 `.env`、`data/`、`logs/` 也会跟着落在应用包内容器里；替换新的 DMG / `.app` 时，旧配置会随旧应用包一起被覆盖
+- macOS 打包态下，`.env`、`data/`、`logs/` 使用用户目录的 `~/Library/Application Support/Daily Stock Analysis/`
+- 若是从旧版桌面端升级，首次启动会自动尝试把旧 `.app` 包内部的 `.env`、数据库和日志迁移到新的持久目录
 - 用户需要编辑 `.env` 配置以下内容：
   - `GEMINI_API_KEY` 或 `OPENAI_API_KEY`：AI 分析必需
   - `STOCK_LIST`：自选股列表（逗号分隔）
@@ -186,13 +200,15 @@ PyInstaller 打包时缺少模块，需要在 `scripts/build-backend.ps1` 中增
 
 ### macOS 升级后配置看起来“被清空”
 
-这是当前桌面端便携模式的已知行为：`.env` 放在打包后的应用目录旁，而 macOS 中这个目录通常位于 `.app` 包内部。升级或替换新的 DMG / `.app` 后，旧 `.env` 不会自动迁移，所以看起来像“配置丢了”。
+旧版桌面端曾把 `.env` 放在 `.app` 包内部，升级或替换新的 DMG / `.app` 后，旧 `.env` 不会自动迁移，所以看起来像“配置丢了”。
 
 处理方式：
 
 1. 升级前在桌面端设置页执行一次 `导出 .env`
 2. 安装新版本后，在同一位置点击 `导入 .env`
 3. 导入完成后等待设置页重新加载即可
+
+从 `3.14.1` 之后的 macOS 构建开始，桌面端会优先使用 `~/Library/Application Support/Daily Stock Analysis/` 保存配置与数据，不再把运行状态写回 `.app` 包内部。
 
 ## 分发给用户
 

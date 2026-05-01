@@ -1,8 +1,10 @@
 import logging
 import os
 import sys
+import tempfile
 import types
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -12,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from data_provider.base import BaseFetcher, DataFetchError, DataFetcherManager
 from data_provider.efinance_fetcher import EfinanceFetcher
+from src.logging_config import setup_logging
 
 
 def _sample_df() -> pd.DataFrame:
@@ -56,6 +59,79 @@ class _FailureFetcher(BaseFetcher):
 
 
 class TestFetcherLogging(unittest.TestCase):
+    def test_setup_logging_raises_urllib3_connectionpool_to_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            setup_logging(log_prefix="test_logging", log_dir=tmp_dir, debug=False)
+
+        self.assertEqual(logging.getLogger("urllib3").level, logging.WARNING)
+        self.assertEqual(
+            logging.getLogger("urllib3.connectionpool").level,
+            logging.ERROR,
+        )
+
+    def test_tushare_missing_token_warning_only_logs_once_at_warning_level(self):
+        import data_provider.tushare_fetcher as tushare_module
+        from data_provider.tushare_fetcher import TushareFetcher
+
+        tushare_module._TUSHARE_MISSING_TOKEN_WARNED = False
+        fake_config = SimpleNamespace(tushare_token="")
+
+        with patch("data_provider.tushare_fetcher.get_config", return_value=fake_config):
+            with self.assertLogs("data_provider.tushare_fetcher", level="WARNING") as captured:
+                TushareFetcher()
+
+            self.assertIn("Tushare Token 未配置，此数据源不可用", "\n".join(captured.output))
+
+            with patch.object(tushare_module.logger, "warning") as warning_mock:
+                TushareFetcher()
+            warning_mock.assert_not_called()
+
+    def test_default_fetcher_priority_summary_logs_info_only_once(self):
+        import data_provider.base as base_module
+        base_module._FETCHER_PRIORITY_INFO_LOGGED = False
+
+        dummy_fetchers = {
+            "data_provider.efinance_fetcher.EfinanceFetcher": SimpleNamespace(name="EfinanceFetcher", priority=0),
+            "data_provider.akshare_fetcher.AkshareFetcher": SimpleNamespace(name="AkshareFetcher", priority=1),
+            "data_provider.tushare_fetcher.TushareFetcher": SimpleNamespace(name="TushareFetcher", priority=2),
+            "data_provider.pytdx_fetcher.PytdxFetcher": SimpleNamespace(name="PytdxFetcher", priority=2),
+            "data_provider.baostock_fetcher.BaostockFetcher": SimpleNamespace(name="BaostockFetcher", priority=3),
+            "data_provider.yfinance_fetcher.YfinanceFetcher": SimpleNamespace(name="YfinanceFetcher", priority=4),
+            "data_provider.longbridge_fetcher.LongbridgeFetcher": SimpleNamespace(name="LongbridgeFetcher", priority=5),
+        }
+
+        with patch("data_provider.base.AkshareFundamentalAdapter", return_value=SimpleNamespace()):
+            with patch.multiple(
+                "data_provider.efinance_fetcher",
+                EfinanceFetcher=lambda: dummy_fetchers["data_provider.efinance_fetcher.EfinanceFetcher"],
+            ), patch.multiple(
+                "data_provider.akshare_fetcher",
+                AkshareFetcher=lambda: dummy_fetchers["data_provider.akshare_fetcher.AkshareFetcher"],
+            ), patch.multiple(
+                "data_provider.tushare_fetcher",
+                TushareFetcher=lambda: dummy_fetchers["data_provider.tushare_fetcher.TushareFetcher"],
+            ), patch.multiple(
+                "data_provider.pytdx_fetcher",
+                PytdxFetcher=lambda: dummy_fetchers["data_provider.pytdx_fetcher.PytdxFetcher"],
+            ), patch.multiple(
+                "data_provider.baostock_fetcher",
+                BaostockFetcher=lambda: dummy_fetchers["data_provider.baostock_fetcher.BaostockFetcher"],
+            ), patch.multiple(
+                "data_provider.yfinance_fetcher",
+                YfinanceFetcher=lambda: dummy_fetchers["data_provider.yfinance_fetcher.YfinanceFetcher"],
+            ), patch.multiple(
+                "data_provider.longbridge_fetcher",
+                LongbridgeFetcher=lambda: dummy_fetchers["data_provider.longbridge_fetcher.LongbridgeFetcher"],
+            ):
+                with self.assertLogs("data_provider.base", level="INFO") as captured:
+                    DataFetcherManager()
+
+                self.assertIn("已初始化 7 个数据源（按优先级）", "\n".join(captured.output))
+
+                with patch.object(base_module.logger, "info") as info_mock:
+                    DataFetcherManager()
+                info_mock.assert_not_called()
+
     def test_base_fetcher_logs_start_and_success(self):
         fetcher = _SuccessFetcher()
 

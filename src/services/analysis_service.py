@@ -22,6 +22,7 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
 )
+from src.services.sniper_points import refine_sniper_points_for_context
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +132,27 @@ class AnalysisService:
         Returns:
             格式化的响应字典
         """
-        # 获取狙击点位
+        # 获取作战计划点位
         sniper_points = {}
         if hasattr(result, 'get_sniper_points'):
             sniper_points = result.get_sniper_points() or {}
+        display_sniper_points = refine_sniper_points_for_context(
+            sniper_points,
+            current_price=getattr(result, "current_price", None),
+            decision_type=getattr(result, "decision_type", None),
+            operation_advice=getattr(result, "operation_advice", None),
+            trend_prediction=getattr(result, "trend_prediction", None),
+            dashboard=getattr(result, "dashboard", None),
+            trend_analysis=getattr(result, "trend_analysis", None),
+            market_snapshot=getattr(result, "market_snapshot", None),
+            audit_context={
+                "source": "analysis_response",
+                "code": getattr(result, "code", None),
+                "name": getattr(result, "name", None),
+                "query_id": query_id,
+                "report_type": report_type,
+            },
+        )
         
         # 计算情绪标签
         report_language = normalize_report_language(getattr(result, "report_language", "zh"))
@@ -161,16 +179,18 @@ class AnalysisService:
                 "sentiment_label": sentiment_label,
             },
             "strategy": {
-                "ideal_buy": sniper_points.get("ideal_buy"),
-                "secondary_buy": sniper_points.get("secondary_buy"),
-                "stop_loss": sniper_points.get("stop_loss"),
-                "take_profit": sniper_points.get("take_profit"),
+                "ideal_buy": display_sniper_points.get("ideal_buy") if "ideal_buy" in sniper_points else None,
+                "secondary_buy": display_sniper_points.get("secondary_buy") if "secondary_buy" in sniper_points else None,
+                "stop_loss": display_sniper_points.get("stop_loss") if "stop_loss" in sniper_points else None,
+                "take_profit": display_sniper_points.get("take_profit") if "take_profit" in sniper_points else None,
             },
             "details": {
                 "news_summary": result.news_summary,
                 "technical_analysis": result.technical_analysis,
                 "fundamental_analysis": result.fundamental_analysis,
                 "risk_warning": result.risk_warning,
+                "market_snapshot": getattr(result, "market_snapshot", None),
+                "data_sources": getattr(result, "data_sources", None),
             }
         }
         

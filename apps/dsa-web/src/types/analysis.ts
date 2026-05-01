@@ -13,7 +13,7 @@ export interface AnalysisRequest {
   asyncMode?: boolean;
   stockName?: string;
   originalQuery?: string;
-  selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image';
+  selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image' | 'portfolio';
   notify?: boolean;
 }
 
@@ -81,15 +81,52 @@ export interface SectorRankings {
   bottom?: SectorRankingItem[];
 }
 
+export interface PortfolioAccountPosition {
+  accountId?: number | string | null;
+  accountName?: string | null;
+  quantity?: number | null;
+  avgCost?: number | null;
+  lastPrice?: number | null;
+  marketValue?: number | null;
+  unrealizedPnl?: number | null;
+  unrealizedPnlPct?: number | null;
+  valuationCurrency?: string | null;
+}
+
+export interface PortfolioPositionContext {
+  hasPosition?: boolean;
+  asOf?: string | null;
+  costMethod?: string | null;
+  currency?: string | null;
+  stockCode?: string | null;
+  accountCount?: number | null;
+  quantity?: number | null;
+  avgCost?: number | null;
+  lastPrice?: number | null;
+  costBasis?: number | null;
+  marketValue?: number | null;
+  unrealizedPnl?: number | null;
+  unrealizedPnlPct?: number | null;
+  weightPct?: number | null;
+  accounts?: PortfolioAccountPosition[];
+}
+
 /** Details section */
 export interface ReportDetails {
   newsContent?: string;
+  newsSummary?: string;
+  technicalAnalysis?: string;
+  fundamentalAnalysis?: string;
+  riskWarning?: string;
+  marketSnapshot?: Record<string, unknown>;
+  dataSources?: string | null;
   rawResult?: Record<string, unknown>;
   contextSnapshot?: Record<string, unknown>;
   financialReport?: Record<string, unknown>;
   dividendMetrics?: Record<string, unknown>;
   belongBoards?: RelatedBoard[];
   sectorRankings?: SectorRankings;
+  portfolioPosition?: PortfolioPositionContext;
 }
 
 /** Full analysis report */
@@ -219,6 +256,18 @@ export interface NewsIntelItem {
 export interface NewsIntelResponse {
   total: number;
   items: NewsIntelItem[];
+}
+
+export interface ArchiveInsightItem {
+  key: string;
+  title: string;
+  path: string;
+  updatedAt?: string;
+  content: string;
+}
+
+export interface ArchiveInsightsResponse {
+  items: ArchiveInsightItem[];
 }
 
 /** History filter parameters */

@@ -105,16 +105,18 @@
 {% if battle %}
 ### 🎯 {{ labels.battle_plan_heading }}
 
-{% set sniper = battle.get('sniper_points', {}) %}
+{% set sniper = refine_sniper(battle.get('sniper_points', {}), result) %}
 {% if sniper %}
 **📍 {{ labels.action_points_heading }}**
 
-| {{ labels.action_points_heading }} | {{ labels.current_price_label }} |
-|---------|------|
-| 🎯 {{ labels.ideal_buy_label }} | {{ clean_sniper(sniper.get('ideal_buy')) }} |
-| 🔵 {{ labels.secondary_buy_label }} | {{ clean_sniper(sniper.get('secondary_buy')) }} |
-| 🛑 {{ labels.stop_loss_label }} | {{ clean_sniper(sniper.get('stop_loss')) }} |
-| 🎊 {{ labels.take_profit_label }} | {{ clean_sniper(sniper.get('take_profit')) }} |
+{% set bearish_plan = result.decision_type == 'sell' or '卖' in (result.operation_advice or '') or '减仓' in (result.operation_advice or '') or '看空' in (result.trend_prediction or '') %}
+{% set entry_label = '重新评估线' if bearish_plan and report_language == 'zh' else ('Recheck Line' if bearish_plan else labels.ideal_buy_label) %}
+{% set secondary_label = '确认转强线' if bearish_plan and report_language == 'zh' else ('Confirm Recovery' if bearish_plan else labels.secondary_buy_label) %}
+{% set stop_label = '立即减仓区' if bearish_plan and report_language == 'zh' else ('Reduce Now' if bearish_plan else labels.stop_loss_label) %}
+{% set target_label = '反抽出局线' if bearish_plan and report_language == 'zh' else ('Exit on Bounce' if bearish_plan else labels.take_profit_label) %}
+| 🎯 {{ entry_label }} | 🔵 {{ secondary_label }} | 🛑 {{ stop_label }} | 🎊 {{ target_label }} |
+|---|---|---|---|
+| {{ clean_sniper(sniper.get('ideal_buy')) }} | {{ clean_sniper(sniper.get('secondary_buy')) }} | {{ clean_sniper(sniper.get('stop_loss')) }} | {{ clean_sniper(sniper.get('take_profit')) }} |
 {% endif %}
 
 {% set position = battle.get('position_strategy', {}) %}

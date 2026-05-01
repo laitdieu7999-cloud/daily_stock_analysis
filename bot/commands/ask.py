@@ -19,6 +19,7 @@ from bot.commands.base import BotCommand
 from bot.models import BotMessage, BotResponse
 from data_provider.base import canonical_stock_code
 from src.config import get_config
+from src.services.sniper_points import clean_sniper_value
 from src.storage import get_db
 
 logger = logging.getLogger(__name__)
@@ -482,28 +483,9 @@ class AskCommand(BotCommand):
 
     @staticmethod
     def _format_sniper_value(value: Any) -> Optional[str]:
-        if value is None:
+        text = clean_sniper_value(value)
+        if text == "N/A":
             return None
-
-        text = str(value).strip()
-        if not text or text in {"-", "—", "N/A", "None"}:
-            return None
-
-        prefixes = (
-            "理想买入点：",
-            "次优买入点：",
-            "止损位：",
-            "目标位：",
-            "理想买入点:",
-            "次优买入点:",
-            "止损位:",
-            "目标位:",
-        )
-        for prefix in prefixes:
-            if text.startswith(prefix):
-                stripped = text[len(prefix):].strip()
-                return stripped or None
-
         return text
 
     @staticmethod

@@ -17,8 +17,11 @@ TODO:
 import os
 import sys
 import unittest
+import json
 from unittest import mock
 from typing import Optional
+from tempfile import TemporaryDirectory
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -255,8 +258,199 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
 
         self.assertIn("Decision Dashboard", out)
         self.assertIn("Summary", out)
-        self.assertIn("Action Levels", out)
+        self.assertIn("Execution Plan", out)
+        self.assertIn("Veto Risk", out)
         self.assertIn("Buy", out)
+        self.assertNotIn("Data View", out)
+        self.assertNotIn("Battle Plan", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_appends_ma_prices_in_one_sentence(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="zh")
+        service = NotificationService()
+        result = AnalysisResult(
+            code="510500",
+            name="南方中证500ETF",
+            sentiment_score=82,
+            trend_prediction="看多",
+            operation_advice="买入",
+            analysis_summary="测试",
+            decision_type="buy",
+            report_language="zh",
+            market_snapshot={
+                "price": "8.323",
+                "pct_chg": "-0.12%",
+                "volume_ratio": "0.63",
+                "turnover_rate": "0.38%",
+                "source": "tencent",
+            },
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "多头排列+缩量回踩MA5，可轻仓介入，止损设于MA20。",
+                    "position_advice": {
+                        "no_position": "现价回踩MA5附近可轻仓介入。",
+                        "has_position": "继续持有，跌破MA20减仓。",
+                    },
+                },
+                "data_perspective": {
+                    "price_position": {
+                        "ma5": "8.32",
+                        "ma20": "8.18",
+                    }
+                },
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "8.30-8.33",
+                        "stop_loss": "8.18",
+                        "take_profit": "8.55",
+                    }
+                },
+            },
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-03-18")
+
+        self.assertIn("**盘面**: 现价 8.32元 | 涨跌 -0.12% | 量比 0.63 | 换手 0.38% | 来源 腾讯财经", out)
+        self.assertIn("MA5(8.32)", out)
+        self.assertIn("MA20(8.18)", out)
+        self.assertIn("现价回踩MA5(8.32)附近可轻仓介入。", out)
+        self.assertIn("继续持有，跌破MA20(8.18)减仓。", out)
+        self.assertIn("8.30-8.33元", out)
+        self.assertIn("8.18元", out)
+        self.assertIn("8.55元", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_uses_bearish_execution_labels(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="zh")
+        service = NotificationService()
+        result = AnalysisResult(
+            code="002580",
+            name="圣阳股份",
+            sentiment_score=32,
+            trend_prediction="强烈看空",
+            operation_advice="卖出",
+            analysis_summary="趋势转弱，先防守。",
+            decision_type="sell",
+            report_language="zh",
+            dashboard={
+                "core_conclusion": {"one_sentence": "趋势转弱，先防守。"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "30.34",
+                        "secondary_buy": "31.14",
+                        "stop_loss": "29.32",
+                        "take_profit": "30.34",
+                    }
+                },
+            },
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-04-30")
+
+        self.assertIn("重新评估线", out)
+        self.assertIn("确认转强线", out)
+        self.assertIn("立即减仓区", out)
+        self.assertIn("反抽出局线", out)
+        self.assertNotIn("**目标区**", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_downgrades_far_sniper_levels(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="zh")
+        service = NotificationService()
+        result = AnalysisResult(
+            code="002580",
+            name="圣阳股份",
+            sentiment_score=68,
+            trend_prediction="看多",
+            operation_advice="买入",
+            analysis_summary="点位需重新校验。",
+            decision_type="buy",
+            report_language="zh",
+            current_price=27.48,
+            dashboard={
+                "core_conclusion": {"one_sentence": "点位需重新校验。"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "12.00",
+                        "secondary_buy": "13.00",
+                        "stop_loss": "10.00",
+                        "take_profit": "36.00",
+                    }
+                },
+            },
+        )
+
+        with TemporaryDirectory() as tmpdir, mock.patch(
+            "src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH",
+            Path(tmpdir) / "audit.jsonl",
+        ):
+            out = service.generate_dashboard_report([result], report_date="2026-04-30")
+
+        self.assertIn("暂不设买入区", out)
+        self.assertIn("暂不设加仓区", out)
+        self.assertIn("暂不设止损线", out)
+        self.assertIn("暂不设目标区", out)
+        self.assertNotIn("36.00元", out)
+
+    def test_clean_sniper_value_formats_price_points(self):
+        self.assertEqual(NotificationService._clean_sniper_value("8.3-8.33"), "8.30-8.33元")
+        self.assertEqual(NotificationService._clean_sniper_value("8.18"), "8.18元")
+        self.assertEqual(NotificationService._clean_sniper_value(195), "195.00元")
+        self.assertEqual(
+            NotificationService._annotate_ma_levels(
+                "跌破MA20（8.18元）减仓。",
+                {"data_perspective": {"price_position": {"ma20": "8.18"}}},
+            ),
+            "跌破MA20（8.18元）减仓。",
+        )
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_skips_data_gap_checklist_for_veto(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="zh")
+        service = NotificationService()
+        result = AnalysisResult(
+            code="510500",
+            name="南方中证500ETF",
+            sentiment_score=76,
+            trend_prediction="看多",
+            operation_advice="买入",
+            analysis_summary="测试",
+            decision_type="buy",
+            report_language="zh",
+            risk_warning="若跌破MA20则本轮计划立即作废。",
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "回踩均线后可试仓。",
+                    "position_advice": {
+                        "no_position": "现价轻仓介入。",
+                        "has_position": "继续持有。",
+                    },
+                },
+                "data_perspective": {
+                    "price_position": {
+                        "ma20": "8.18",
+                    }
+                },
+                "battle_plan": {
+                    "action_checklist": [
+                        "⚠️ 检查项5：筹码结构未知（数据缺失）",
+                        "✅ 检查项1：多头排列",
+                    ],
+                    "sniper_points": {
+                        "ideal_buy": "8.30-8.33",
+                        "stop_loss": "8.18",
+                        "take_profit": "8.55",
+                    }
+                },
+            },
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-03-18")
+
+        self.assertIn("若跌破MA20(8.18)则本轮计划立即作废。", out)
+        self.assertNotIn("筹码结构未知（数据缺失）", out)
 
     @mock.patch("src.notification.get_config")
     def test_generate_dashboard_report_localizes_english_no_dashboard_fallback(
@@ -293,6 +487,31 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertNotIn("消息面", out)
 
     @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_surfaces_failed_results_explicitly(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="zh")
+        service = NotificationService()
+        result = AnalysisResult(
+            code="159869",
+            name="游戏ETF",
+            sentiment_score=0,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            analysis_summary="",
+            decision_type="hold",
+            report_language="zh",
+            success=False,
+            error_message="All LLM models failed: Your account balance is insufficient.",
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-03-19")
+
+        self.assertIn("❌失败:1", out)
+        self.assertIn("❌ **游戏ETF(159869)**: 分析失败", out)
+        self.assertIn("## ❌ 游戏ETF (159869)", out)
+        self.assertIn("本轮未生成有效决策，未纳入买卖建议汇总。", out)
+        self.assertIn("Your account balance is insufficient", out)
+
+    @mock.patch("src.notification.get_config")
     def test_generate_single_stock_report_localizes_english_fallback(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(report_renderer_enabled=False, report_language="en")
         service = NotificationService()
@@ -319,8 +538,10 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         out = service.generate_single_stock_report(result)
 
         self.assertIn("Core Conclusion", out)
-        self.assertIn("Action Levels", out)
+        self.assertIn("Execution Plan", out)
+        self.assertIn("Veto Risk", out)
         self.assertIn("Hold", out)
+        self.assertNotIn("Market Snapshot", out)
 
     @mock.patch("src.notification.get_config")
     def test_history_compare_context_uses_cache(self, mock_get_config: mock.MagicMock):
@@ -401,13 +622,42 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         mock_get_config.return_value = cfg
         mock_post.return_value = _make_response(200, {"code": 0})
 
-        service = NotificationService()
-        self.assertIn(NotificationChannel.FEISHU, service.get_available_channels())
+        with TemporaryDirectory() as tmpdir:
+            audit_path = Path(tmpdir) / "feishu_push_audit.jsonl"
+            archive_dir = Path(tmpdir) / "archive"
+            with mock.patch("src.notification.FEISHU_PUSH_AUDIT_PATH", audit_path), \
+                 mock.patch("src.notification.FEISHU_PUSH_AUDIT_ARCHIVE_DIR", archive_dir):
+                service = NotificationService()
+                self.assertIn(NotificationChannel.FEISHU, service.get_available_channels())
 
-        ok = service.send("hello feishu")
+                ok = service.send("hello feishu")
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_feishu_writes_audit_record(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(feishu_webhook_url="https://feishu.example")
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200, {"code": 0})
+
+        with TemporaryDirectory() as tmpdir:
+            audit_path = Path(tmpdir) / "feishu_push_audit.jsonl"
+            archive_dir = Path(tmpdir) / "archive"
+            with mock.patch("src.notification.FEISHU_PUSH_AUDIT_PATH", audit_path), \
+                 mock.patch("src.notification.FEISHU_PUSH_AUDIT_ARCHIVE_DIR", archive_dir):
+                service = NotificationService()
+                ok = service.send("## 玄学治理日报\n\n- 结论: 偏防守")
+                rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                archive_exists = Path(rows[0]["archive_path"]).exists()
+
+        self.assertTrue(ok)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["success"])
+        self.assertEqual(rows[0]["channel"], "feishu")
+        self.assertEqual(rows[0]["push_kind"], "metaphysical_daily")
+        self.assertTrue(archive_exists)
         
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
@@ -416,13 +666,41 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         mock_get_config.return_value = cfg
         mock_post.return_value = _make_response(200, {"code": 0})
 
-        service = NotificationService()
-        self.assertIn(NotificationChannel.FEISHU, service.get_available_channels())
+        with TemporaryDirectory() as tmpdir:
+            audit_path = Path(tmpdir) / "feishu_push_audit.jsonl"
+            archive_dir = Path(tmpdir) / "archive"
+            with mock.patch("src.notification.FEISHU_PUSH_AUDIT_PATH", audit_path), \
+                 mock.patch("src.notification.FEISHU_PUSH_AUDIT_ARCHIVE_DIR", archive_dir):
+                service = NotificationService()
+                self.assertIn(NotificationChannel.FEISHU, service.get_available_channels())
 
-        ok = service.send("A" * 6000)
+                ok = service.send("A" * 6000)
 
         self.assertTrue(ok)
         self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_feishu_failure_still_writes_audit_record(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(feishu_webhook_url="https://feishu.example")
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(500)
+
+        with TemporaryDirectory() as tmpdir:
+            audit_path = Path(tmpdir) / "feishu_push_audit.jsonl"
+            archive_dir = Path(tmpdir) / "archive"
+            with mock.patch("src.notification.FEISHU_PUSH_AUDIT_PATH", audit_path), \
+                 mock.patch("src.notification.FEISHU_PUSH_AUDIT_ARCHIVE_DIR", archive_dir):
+                service = NotificationService()
+                ok = service.send("hello feishu failed")
+                rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                archive_exists = Path(rows[0]["archive_path"]).exists()
+
+        self.assertFalse(ok)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["success"])
+        self.assertEqual(rows[0]["error"], "send_returned_false")
+        self.assertTrue(archive_exists)
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")

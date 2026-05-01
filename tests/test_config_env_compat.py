@@ -33,6 +33,67 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_load_from_env_reads_separate_watchlist_stock_list(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                "STOCK_LIST=600519,159937\n"
+                "WATCHLIST_STOCK_LIST=300750,159937,01810,ndx100\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"ENV_FILE": str(env_path)}, clear=True):
+                config = Config._load_from_env()
+
+        self.assertEqual(config.stock_list, ["600519", "159937"])
+        self.assertEqual(config.watchlist_stock_list, ["300750", "159937", "01810", "NDX100"])
+        self.assertEqual(
+            config.get_analysis_stock_list(),
+            ["600519", "159937", "300750", "01810", "NDX100"],
+        )
+        self.assertEqual(config.stock_intraday_watchlist_buy_start_time, "14:30")
+        self.assertEqual(config.stock_intraday_watchlist_buy_end_time, "14:55")
+        self.assertEqual(config.stock_intraday_watchlist_max_stop_loss_distance_pct, 3.5)
+        self.assertEqual(config.stock_intraday_holding_cooldown_minutes, 30)
+        self.assertTrue(config.stock_intraday_self_check_enabled)
+        self.assertEqual(config.stock_intraday_self_check_time, "09:25")
+        self.assertTrue(config.stock_intraday_replay_ledger_enabled)
+        self.assertEqual(config.stock_intraday_watchlist_daily_limit, 1)
+        self.assertEqual(config.stock_intraday_systemic_batch_threshold, 3)
+        self.assertEqual(config.stock_intraday_bad_tick_max_abs_change_pct, 25.0)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_load_from_env_reads_intraday_routing_guardrails(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "STOCK_INTRADAY_HOLDING_COOLDOWN_MINUTES": "45",
+                "STOCK_INTRADAY_WATCHLIST_DAILY_LIMIT": "2",
+                "STOCK_INTRADAY_SYSTEMIC_BATCH_THRESHOLD": "4",
+                "STOCK_INTRADAY_BAD_TICK_MAX_ABS_CHANGE_PCT": "18.5",
+                "STOCK_INTRADAY_SELF_CHECK_ENABLED": "false",
+                "STOCK_INTRADAY_SELF_CHECK_TIME": "09:24",
+                "STOCK_INTRADAY_REPLAY_LEDGER_ENABLED": "false",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.stock_intraday_holding_cooldown_minutes, 45)
+        self.assertFalse(config.stock_intraday_self_check_enabled)
+        self.assertEqual(config.stock_intraday_self_check_time, "09:24")
+        self.assertFalse(config.stock_intraday_replay_ledger_enabled)
+        self.assertEqual(config.stock_intraday_watchlist_daily_limit, 2)
+        self.assertEqual(config.stock_intraday_systemic_batch_threshold, 4)
+        self.assertEqual(config.stock_intraday_bad_tick_max_abs_change_pct, 18.5)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_load_from_env_keeps_default_behavior_without_tickflow_api_key(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):
@@ -149,6 +210,87 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
                 config = Config._load_from_env()
 
         self.assertEqual(config.schedule_time, "18:00")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_close_reminder_env_is_loaded(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "CLOSE_REMINDER_ENABLED": "true",
+                "CLOSE_REMINDER_TIME": "15:20",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.close_reminder_enabled)
+        self.assertEqual(config.close_reminder_time, "15:20")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_premarket_health_check_env_is_loaded(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "PREMARKET_HEALTH_CHECK_ENABLED": "true",
+                "PREMARKET_HEALTH_CHECK_TIME": "08:55",
+                "PREMARKET_HEALTH_CHECK_PUSH_OK": "false",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertTrue(config.premarket_health_check_enabled)
+        self.assertEqual(config.premarket_health_check_time, "08:55")
+        self.assertFalse(config.premarket_health_check_push_ok)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_custom_extension_toggles_are_loaded(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "MARKET_DAILY_PUSH_ENABLED": "false",
+                "MARKET_DAILY_PUSH_AI_ENABLED": "false",
+                "ENABLE_METAPHYSICAL_FEATURES": "true",
+                "METAPHYSICAL_CACHE_DIR": "./tmp/meta-cache",
+                "NIGHTLY_MARKET_OUTLOOK_ENABLED": "true",
+                "NIGHTLY_MARKET_OUTLOOK_TIME": "21:55",
+                "NIGHTLY_MARKET_OUTLOOK_AI_ENABLED": "false",
+                "NIGHTLY_MARKET_OUTLOOK_TIMEOUT_SECONDS": "30",
+                "JIN10_API_KEY": "jin10-secret",
+                "JIN10_X_TOKEN": "jin10-x-token",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertFalse(config.market_daily_push_enabled)
+        self.assertFalse(config.market_daily_push_ai_enabled)
+        self.assertTrue(config.enable_metaphysical_features)
+        self.assertEqual(config.metaphysical_cache_dir, "./tmp/meta-cache")
+        self.assertTrue(config.nightly_market_outlook_enabled)
+        self.assertEqual(config.nightly_market_outlook_time, "21:55")
+        self.assertFalse(config.nightly_market_outlook_ai_enabled)
+        self.assertEqual(config.nightly_market_outlook_timeout_seconds, 30)
+        self.assertEqual(config.jin10_api_key, "jin10-secret")
+        self.assertEqual(config.jin10_x_token, "jin10-x-token")
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

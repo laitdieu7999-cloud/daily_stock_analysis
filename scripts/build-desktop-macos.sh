@@ -47,4 +47,23 @@ else
 fi
 popd >/dev/null
 
+if [[ -n "${MAC_ARCH}" ]]; then
+  APP_BUNDLE="${ROOT_DIR}/apps/dsa-desktop/dist/mac-${MAC_ARCH}/daily-stock-analysis-desktop.app"
+else
+  APP_BUNDLE="$(find "${ROOT_DIR}/apps/dsa-desktop/dist" -maxdepth 2 -type d -name 'daily-stock-analysis-desktop.app' | head -n 1)"
+fi
+
+CHECK_PYTHON_BIN="${PYTHON_BIN:-python3}"
+if ! command -v "${CHECK_PYTHON_BIN}" >/dev/null 2>&1; then
+  echo "Python not found for desktop bundle check. Set PYTHON_BIN or install python3."
+  exit 1
+fi
+
+echo "Checking packaged desktop app..."
+if [[ "${DSA_DESKTOP_SKIP_BACKEND_SMOKE:-false}" == "true" ]]; then
+  "${CHECK_PYTHON_BIN}" "${SCRIPT_DIR}/check_desktop_bundle_macos.py" "${APP_BUNDLE}" --skip-backend-smoke
+else
+  "${CHECK_PYTHON_BIN}" "${SCRIPT_DIR}/check_desktop_bundle_macos.py" "${APP_BUNDLE}"
+fi
+
 echo "Desktop build completed."

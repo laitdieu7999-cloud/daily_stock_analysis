@@ -48,8 +48,12 @@ env/
 
 # 数据和日志
 /data/
+/data
 logs/
+/logs
 reports/
+/reports
+.cache/
 *.db
 *.sqlite
 *.sqlite3

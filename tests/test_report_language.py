@@ -4,6 +4,7 @@
 import unittest
 
 from src.report_language import (
+    format_chip_summary,
     get_bias_status_emoji,
     get_localized_stock_name,
     get_sentiment_label,
@@ -44,6 +45,34 @@ class ReportLanguageTestCase(unittest.TestCase):
         self.assertEqual(localize_bias_status("警戒", "en"), "Caution")
         self.assertEqual(get_bias_status_emoji("Safe"), "✅")
         self.assertEqual(get_bias_status_emoji("Caution"), "⚠️")
+
+    def test_format_chip_summary_collapses_all_missing_values(self) -> None:
+        summary = format_chip_summary(
+            {
+                "profit_ratio": "数据缺失",
+                "avg_cost": "数据缺失",
+                "concentration": "数据缺失",
+                "chip_health": "数据缺失，无法判断",
+            },
+            "zh",
+            include_emoji=True,
+        )
+
+        self.assertEqual(summary, "数据缺失，无法判断")
+
+    def test_format_chip_summary_keeps_available_values_and_health(self) -> None:
+        summary = format_chip_summary(
+            {
+                "profit_ratio": "32.1%",
+                "avg_cost": "18.43",
+                "concentration": "N/A",
+                "chip_health": "健康",
+            },
+            "zh",
+            include_emoji=True,
+        )
+
+        self.assertEqual(summary, "32.1% | 18.43 | ✅健康")
 
 
 if __name__ == "__main__":

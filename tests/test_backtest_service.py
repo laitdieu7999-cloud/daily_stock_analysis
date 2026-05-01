@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 from datetime import date, datetime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.config import Config
@@ -125,6 +126,7 @@ class BacktestServiceTestCase(unittest.TestCase):
         service = BacktestService(self.db)
 
         stats1 = service.run_backtest(code="600519", force=False, eval_window_days=3, min_age_days=0, limit=10)
+        self.assertEqual(stats1["candidate_count"], 1)
         self.assertEqual(stats1["saved"], 1)
         self.assertEqual(self._count_results(), 1)
 
@@ -153,6 +155,8 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(result.code, "600519")
         self.assertEqual(result.analysis_date, date(2024, 1, 1))
         self.assertEqual(result.operation_advice, "买入")
+        self.assertAlmostEqual(result.ranking_score, 80.0)
+        self.assertEqual(result.score_source, "sentiment_score")
         self.assertEqual(result.position_recommendation, "long")
         self.assertEqual(result.direction_expected, "up")
 
@@ -255,6 +259,8 @@ class BacktestServiceTestCase(unittest.TestCase):
         self.assertEqual(item["outcome"], "win")
         self.assertEqual(item["direction_expected"], "up")
         self.assertTrue(item["direction_correct"])
+        self.assertAlmostEqual(item["ranking_score"], 80.0)
+        self.assertEqual(item["score_source"], "sentiment_score")
 
     def test_get_recent_evaluations_supports_tracking_fields_and_analysis_date_filters(self) -> None:
         self._seed_analysis(
@@ -499,6 +505,266 @@ class BacktestServiceTestCase(unittest.TestCase):
             self.assertEqual(overall.total_evaluations, 2)
             self.assertEqual(overall.completed_count, 2)
             self.assertEqual(overall.win_count, 2)
+
+    def test_extract_ranking_score_prefers_signal_score_then_fallbacks(self) -> None:
+        service = BacktestService(self.db)
+
+        analysis_with_signal = SimpleNamespace(
+            context_snapshot='{"enhanced_context":{"trend_analysis":{"signal_score":69}}}',
+            raw_result='{"sentiment_score":55,"dashboard":{"data_perspective":{"trend_status":{"trend_score":88}}}}',
+            sentiment_score=44,
+        )
+        score, source = service._extract_ranking_score(analysis_with_signal)
+        self.assertEqual(score, 69.0)
+        self.assertEqual(source, "signal_score")
+
+        analysis_with_sentiment = SimpleNamespace(
+            context_snapshot='{}',
+            raw_result='{"sentiment_score":61}',
+            sentiment_score=44,
+        )
+        score, source = service._extract_ranking_score(analysis_with_sentiment)
+        self.assertEqual(score, 61.0)
+        self.assertEqual(source, "sentiment_score")
+
+        analysis_with_trend_only = SimpleNamespace(
+            context_snapshot='{}',
+            raw_result='{"dashboard":{"data_perspective":{"trend_status":{"trend_score":75}}}}',
+            sentiment_score=None,
+        )
+        score, source = service._extract_ranking_score(analysis_with_trend_only)
+        self.assertEqual(score, 75.0)
+        self.assertEqual(source, "trend_score")
+
+    def test_build_ranked_candidates_orders_by_score_desc(self) -> None:
+        service = BacktestService(self.db)
+        analyses = [
+            SimpleNamespace(
+                id=1,
+                code="AAA",
+                created_at=datetime(2024, 1, 1, 0, 0, 0),
+                context_snapshot='{"enhanced_context":{"date":"2024-01-01","trend_analysis":{"signal_score":52}}}',
+                raw_result='{}',
+                sentiment_score=52,
+            ),
+            SimpleNamespace(
+                id=2,
+                code="BBB",
+                created_at=datetime(2024, 1, 2, 0, 0, 0),
+                context_snapshot='{"enhanced_context":{"date":"2024-01-02","trend_analysis":{"signal_score":88}}}',
+                raw_result='{}',
+                sentiment_score=88,
+            ),
+        ]
+
+        ranked = service._build_ranked_candidates(analyses)
+        self.assertEqual([item["analysis"].code for item in ranked], ["BBB", "AAA"])
+        self.assertEqual([item["ranking_score"] for item in ranked], [88.0, 52.0])
+
+    def test_run_backtest_supports_score_threshold(self) -> None:
+        self._seed_analysis(
+            query_id="q2",
+            analysis_date=date(2024, 1, 10),
+            created_at=datetime(2024, 1, 10, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(code="600519", date=date(2024, 1, 11), high=101.0, low=99.0, close=100.0),
+                StockDaily(code="600519", date=date(2024, 1, 12), high=102.0, low=99.0, close=101.0),
+                StockDaily(code="600519", date=date(2024, 1, 13), high=103.0, low=99.0, close=102.0),
+            ],
+        )
+
+        with self.db.get_session() as session:
+            older = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "q1").one()
+            newer = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "q2").one()
+            older.context_snapshot = '{"enhanced_context":{"date":"2024-01-01","trend_analysis":{"signal_score":80}}}'
+            newer.context_snapshot = '{"enhanced_context":{"date":"2024-01-10","trend_analysis":{"signal_score":55}}}'
+            session.commit()
+
+        service = BacktestService(self.db)
+        stats = service.run_backtest(
+            code="600519",
+            force=False,
+            eval_window_days=3,
+            min_age_days=0,
+            limit=20,
+            score_threshold=60,
+        )
+        self.assertEqual(stats["candidate_count"], 1)
+        self.assertEqual(stats["saved"], 1)
+
+    def test_run_backtest_supports_top_n(self) -> None:
+        old_created_at = datetime(2024, 1, 1, 0, 0, 0)
+        with self.db.get_session() as session:
+            session.add(
+                AnalysisHistory(
+                    query_id="q2",
+                    code="000001",
+                    name="平安银行",
+                    report_type="simple",
+                    sentiment_score=30,
+                    operation_advice="卖出",
+                    trend_prediction="看空",
+                    analysis_summary="test2",
+                    stop_loss=None,
+                    take_profit=None,
+                    created_at=old_created_at,
+                    context_snapshot='{"enhanced_context":{"date":"2024-01-01","trend_analysis":{"signal_score":30}}}',
+                )
+            )
+            session.add(StockDaily(code="000001", date=date(2024, 1, 1), open=10.0, high=10.2, low=9.8, close=10.0))
+            session.add_all([
+                StockDaily(code="000001", date=date(2024, 1, 2), high=10.0, low=9.5, close=9.6),
+                StockDaily(code="000001", date=date(2024, 1, 3), high=9.7, low=9.3, close=9.4),
+                StockDaily(code="000001", date=date(2024, 1, 4), high=9.5, low=9.0, close=9.1),
+            ])
+            session.commit()
+
+        service = BacktestService(self.db)
+        stats = service.run_backtest(
+            code=None,
+            force=False,
+            eval_window_days=3,
+            min_age_days=0,
+            limit=20,
+            top_n=1,
+        )
+        self.assertEqual(stats["candidate_count"], 1)
+        self.assertEqual(stats["saved"], 1)
+
+    def test_scan_parameter_grid_returns_in_memory_combo_summaries(self) -> None:
+        self._seed_analysis(
+            query_id="q2",
+            analysis_date=date(2024, 1, 10),
+            created_at=datetime(2024, 1, 10, 0, 0, 0),
+            operation_advice="买入",
+            trend_prediction="看多",
+            start_close=100.0,
+            forward_bars=[
+                StockDaily(code="600519", date=date(2024, 1, 11), high=101.0, low=99.0, close=100.0),
+                StockDaily(code="600519", date=date(2024, 1, 12), high=102.0, low=99.0, close=101.0),
+                StockDaily(code="600519", date=date(2024, 1, 13), high=103.0, low=99.0, close=102.0),
+            ],
+        )
+        with self.db.get_session() as session:
+            older = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "q1").one()
+            newer = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "q2").one()
+            older.context_snapshot = '{"enhanced_context":{"date":"2024-01-01","trend_analysis":{"signal_score":80}}}'
+            newer.context_snapshot = '{"enhanced_context":{"date":"2024-01-10","trend_analysis":{"signal_score":55}}}'
+            session.commit()
+
+        service = BacktestService(self.db)
+        scan = service.scan_parameter_grid(
+            code="600519",
+            min_age_days=0,
+            limit=20,
+            eval_window_days_options=[3],
+            score_threshold_options=[None, 60.0],
+            top_n_options=[None, 1],
+        )
+
+        self.assertEqual(scan["raw_candidate_count"], 2)
+        self.assertEqual(scan["ranked_candidate_count"], 2)
+        self.assertEqual(len(scan["scans"]), 4)
+        candidate_counts = {
+            (item["score_threshold"], item["top_n"]): item["candidate_count"]
+            for item in scan["scans"]
+        }
+        self.assertEqual(candidate_counts[(None, None)], 2)
+        self.assertEqual(candidate_counts[(None, 1)], 1)
+        self.assertEqual(candidate_counts[(60.0, None)], 1)
+        self.assertEqual(candidate_counts[(60.0, 1)], 1)
+        self.assertIsNotNone(scan["best_by_return"])
+        self.assertIsNotNone(scan["best_by_win_rate"])
+        self.assertEqual(scan["conclusion"]["status"], "ok")
+        self.assertIn("优先考虑持有", scan["conclusion"]["summary_text"])
+        self.assertEqual(scan["conclusion"]["recommended_scan"], scan["best_by_return"])
+        self.assertEqual(scan["best_by_return"], scan["scans"][0])
+        self.assertIn(scan["best_by_win_rate"]["candidate_count"], {1, 2})
+        self.assertGreaterEqual(
+            scan["scans"][0]["avg_simulated_return_pct"],
+            scan["scans"][-1]["avg_simulated_return_pct"],
+        )
+        self.assertEqual(self._count_results(), 0)
+
+    def test_scan_parameter_grid_local_data_only_skips_fill_attempts(self) -> None:
+        with self.db.get_session() as session:
+            row = session.query(StockDaily).filter(StockDaily.code == "600519", StockDaily.date == date(2024, 1, 4)).one()
+            session.delete(row)
+            session.commit()
+
+        service = BacktestService(self.db)
+        with patch.object(service, "_try_fill_daily_data") as mocked_fill:
+            scan = service.scan_parameter_grid(
+                code="600519",
+                min_age_days=0,
+                limit=20,
+                local_data_only=True,
+                eval_window_days_options=[3],
+                score_threshold_options=[None],
+                top_n_options=[None],
+            )
+
+        mocked_fill.assert_not_called()
+        self.assertTrue(scan["local_data_only"])
+        self.assertEqual(len(scan["scans"]), 1)
+        self.assertEqual(scan["scans"][0]["insufficient_count"], 1)
+        self.assertEqual(scan["conclusion"]["status"], "insufficient_data")
+        self.assertEqual(self._count_results(), 0)
+
+    def test_recent_analysis_skips_future_data_fill(self) -> None:
+        today = date.today()
+        with self.db.get_session() as session:
+            session.add(
+                AnalysisHistory(
+                    query_id="recent-q1",
+                    code="000333",
+                    name="美的集团",
+                    report_type="simple",
+                    sentiment_score=72,
+                    operation_advice="买入",
+                    trend_prediction="看多",
+                    analysis_summary="recent-test",
+                    stop_loss=None,
+                    take_profit=None,
+                    created_at=datetime(today.year, today.month, today.day, 9, 30, 0),
+                    context_snapshot=f'{{"enhanced_context": {{"date": "{today.isoformat()}", "trend_analysis": {{"signal_score": 72}}}}}}',
+                )
+            )
+            session.add(
+                StockDaily(
+                    code="000333",
+                    date=today,
+                    open=50.0,
+                    high=50.5,
+                    low=49.5,
+                    close=50.0,
+                )
+            )
+            session.commit()
+
+        service = BacktestService(self.db)
+        with patch.object(service, "_try_fill_daily_data") as mocked_fill:
+            stats = service.run_backtest(
+                code="000333",
+                force=True,
+                eval_window_days=10,
+                min_age_days=0,
+                limit=10,
+            )
+
+        mocked_fill.assert_not_called()
+        self.assertEqual(stats["candidate_count"], 1)
+        self.assertEqual(stats["saved"], 1)
+        self.assertEqual(stats["completed"], 0)
+        self.assertEqual(stats["insufficient"], 1)
+
+        with self.db.get_session() as session:
+            result = session.query(BacktestResult).filter(BacktestResult.code == "000333").one()
+            self.assertEqual(result.eval_status, "insufficient_data")
+            self.assertEqual(result.analysis_date, today)
 
 
 if __name__ == "__main__":

@@ -316,10 +316,27 @@ class TestAskCommandMultiStock(unittest.TestCase):
         text = AskCommand._format_stock_result("600519", dashboard, "raw content")
 
         self.assertIn("**关键点位**", text)
-        self.assertIn("ideal_buy=10.0", text)
-        self.assertIn("secondary_buy=9.8", text)
-        self.assertIn("stop_loss=9.5", text)
-        self.assertIn("take_profit=11.6", text)
+        self.assertIn("ideal_buy=10.00元", text)
+        self.assertIn("secondary_buy=9.80元", text)
+        self.assertIn("stop_loss=9.50元", text)
+        self.assertIn("take_profit=11.60元", text)
+
+    def test_format_stock_result_cleans_messy_sniper_points(self):
+        dashboard = self._dashboard("600519")
+        dashboard["dashboard"]["battle_plan"]["sniper_points"] = {
+            "ideal_buy": {"price": 10.0, "reason": "MA5附近"},
+            "secondary_buy": '{"low": 9.8, "high": 9.9, "condition": "缩量回踩"}',
+            "stop_loss": [{"debug": "无"}, {"price": 9.5, "basis": "跌破支撑"}],
+            "take_profit": {"value": 11.6},
+        }
+
+        text = AskCommand._format_stock_result("600519", dashboard, "raw content")
+
+        self.assertIn("ideal_buy=10.00元（MA5附近）", text)
+        self.assertIn("secondary_buy=9.80-9.90元（缩量回踩）", text)
+        self.assertIn("stop_loss=9.50元（跌破支撑）", text)
+        self.assertNotIn("{'price'", text)
+        self.assertNotIn('"low"', text)
 
     def test_analyze_single_passes_requested_skill_into_context(self):
         command = AskCommand()

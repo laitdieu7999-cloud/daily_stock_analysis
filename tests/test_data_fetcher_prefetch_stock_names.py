@@ -146,6 +146,24 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertEqual(name, "平安银行")
         manager.get_realtime_quote.assert_called_once_with("000001.SZ", log_final_failure=False)
 
+    def test_get_stock_name_defers_pytdx_fetcher_until_after_faster_sources(self):
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        baostock_fetcher = MagicMock()
+        baostock_fetcher.name = "BaostockFetcher"
+        baostock_fetcher.get_stock_name.return_value = "南方中证500ETF"
+        pytdx_fetcher = MagicMock()
+        pytdx_fetcher.name = "PytdxFetcher"
+        pytdx_fetcher.get_stock_name.return_value = "延迟名称"
+        manager._fetchers = [pytdx_fetcher, baostock_fetcher]
+        manager.get_realtime_quote = MagicMock(return_value=None)
+
+        with patch("data_provider.base.get_index_stock_name", return_value=None):
+            name = DataFetcherManager.get_stock_name(manager, "510500", allow_realtime=False)
+
+        self.assertEqual(name, "南方中证500ETF")
+        baostock_fetcher.get_stock_name.assert_called_once_with("510500")
+        pytdx_fetcher.get_stock_name.assert_not_called()
+
     def test_fetch_and_save_stock_data_uses_lightweight_name_lookup(self):
         pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
         pipeline.fetcher_manager = MagicMock()

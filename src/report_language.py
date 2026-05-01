@@ -210,10 +210,10 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "resistance_level_label": "压力位",
         "chip_label": "筹码",
         "battle_plan_heading": "作战计划",
-        "ideal_buy_label": "理想买入点",
-        "secondary_buy_label": "次优买入点",
-        "stop_loss_label": "止损位",
-        "take_profit_label": "目标位",
+        "ideal_buy_label": "买入区",
+        "secondary_buy_label": "加仓区",
+        "stop_loss_label": "止损线",
+        "take_profit_label": "目标区",
         "suggested_position_label": "仓位建议",
         "entry_plan_label": "建仓策略",
         "risk_control_label": "风控策略",
@@ -230,6 +230,7 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "report_title": "股票分析报告",
         "avg_score_label": "均分",
         "action_points_heading": "操作点位",
+        "action_price_condition_label": "执行价/条件",
         "position_advice_heading": "持仓建议",
         "analysis_model_label": "分析模型",
         "not_investment_advice": "AI生成，仅供参考，不构成投资建议",
@@ -290,10 +291,10 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "resistance_level_label": "Resistance",
         "chip_label": "Chip Structure",
         "battle_plan_heading": "Battle Plan",
-        "ideal_buy_label": "Ideal Entry",
-        "secondary_buy_label": "Secondary Entry",
-        "stop_loss_label": "Stop Loss",
-        "take_profit_label": "Target",
+        "ideal_buy_label": "Entry Zone",
+        "secondary_buy_label": "Add Zone",
+        "stop_loss_label": "Stop Line",
+        "take_profit_label": "Target Zone",
         "suggested_position_label": "Position Size",
         "entry_plan_label": "Entry Plan",
         "risk_control_label": "Risk Control",
@@ -310,6 +311,7 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "report_title": "Stock Analysis Report",
         "avg_score_label": "Avg Score",
         "action_points_heading": "Action Levels",
+        "action_price_condition_label": "Price/Condition",
         "position_advice_heading": "Position Advice",
         "analysis_model_label": "Model",
         "not_investment_advice": "AI-generated content for reference only. Not investment advice.",
@@ -455,6 +457,60 @@ def localize_chip_health(value: Any, language: Optional[str]) -> str:
         canonical_map=_CHIP_HEALTH_CANONICAL_MAP,
         translations=_CHIP_HEALTH_TRANSLATIONS,
     )
+
+
+def _is_missing_report_value(value: Any) -> bool:
+    """Return whether a rendered report value is effectively a missing placeholder."""
+    if value is None:
+        return True
+    text = str(value).strip()
+    if not text:
+        return True
+
+    normalized = text.lower()
+    if normalized in {"n/a", "na", "none", "null", "-", "--", "nan"}:
+        return True
+    return "数据缺失" in text or "无法判断" in text
+
+
+def format_chip_summary(
+    chip_data: Optional[Dict[str, Any]],
+    language: Optional[str],
+    *,
+    include_emoji: bool = False,
+) -> str:
+    """Render a concise chip-summary string without noisy placeholder repetition."""
+    normalized_language = normalize_report_language(language)
+    missing_message = "数据缺失，无法判断" if normalized_language == "zh" else "Data missing, unable to assess"
+    if not chip_data:
+        return missing_message
+
+    profit_ratio = chip_data.get("profit_ratio", "N/A")
+    avg_cost = chip_data.get("avg_cost", "N/A")
+    concentration = chip_data.get("concentration", "N/A")
+    raw_chip_health = chip_data.get("chip_health", "N/A")
+
+    core_values = [profit_ratio, avg_cost, concentration]
+    if all(_is_missing_report_value(value) for value in core_values) and _is_missing_report_value(raw_chip_health):
+        return missing_message
+
+    segments = [str(value).strip() for value in core_values if not _is_missing_report_value(value)]
+    if not _is_missing_report_value(raw_chip_health):
+        chip_health = localize_chip_health(raw_chip_health, normalized_language)
+        if chip_health:
+            if include_emoji:
+                normalized_chip_health = str(raw_chip_health).strip().lower()
+                if normalized_chip_health in {"健康", "healthy"}:
+                    chip_health = f"✅{chip_health}"
+                elif normalized_chip_health in {"一般", "average"}:
+                    chip_health = f"⚠️{chip_health}"
+                elif normalized_chip_health in {"警惕", "caution"}:
+                    chip_health = f"🚨{chip_health}"
+            segments.append(chip_health)
+
+    if not segments:
+        return missing_message
+    return " | ".join(segments)
 
 
 def localize_bias_status(value: Any, language: Optional[str]) -> str:

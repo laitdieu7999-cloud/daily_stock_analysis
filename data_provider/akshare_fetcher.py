@@ -90,6 +90,10 @@ _etf_realtime_cache: Dict[str, Any] = {
     'ttl': 1200  # 20分钟缓存有效期
 }
 
+_etf_direct_quote_cache: Dict[str, Dict[str, Any]] = {}
+_ETF_DIRECT_QUOTE_TTL = 60
+_ETF_DIRECT_QUOTE_STALE_TTL = 600
+
 
 def _is_etf_code(stock_code: str) -> bool:
     """
@@ -804,6 +808,11 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._get_hk_realtime_quote(stock_code)
         elif _is_etf_code(stock_code):
+            if source in ("sina", "akshare_sina"):
+                return self._get_etf_realtime_quote_direct(stock_code, source="sina")
+            if source in ("tencent", "akshare_qq"):
+                return self._get_etf_realtime_quote_direct(stock_code, source="tencent")
+
             source_key = "akshare_etf"
             if not circuit_breaker.is_available(source_key):
                 logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
@@ -844,7 +853,7 @@ class AkshareFetcher(BaseFetcher):
                 logger.debug(f"[缓存命中] A股实时行情(东财) - 缓存年龄 {cache_age}s/{_realtime_cache['ttl']}s")
             else:
                 # 触发全量刷新
-                logger.info(f"[缓存未命中] 触发全量刷新 A股实时行情(东财)")
+                logger.debug(f"[缓存未命中] 触发全量刷新 A股实时行情(东财)")
                 last_error: Optional[Exception] = None
                 df = None
                 for attempt in range(1, 3):
@@ -853,14 +862,14 @@ class AkshareFetcher(BaseFetcher):
                         self._set_random_user_agent()
                         self._enforce_rate_limit()
 
-                        logger.info(f"[API调用] ak.stock_zh_a_spot_em() 获取A股实时行情... (attempt {attempt}/2)")
+                        logger.debug(f"[API调用] ak.stock_zh_a_spot_em() 获取A股实时行情... (attempt {attempt}/2)")
                         import time as _time
                         api_start = _time.time()
 
                         df = ak.stock_zh_a_spot_em()
 
                         api_elapsed = _time.time() - api_start
-                        logger.info(f"[API返回] ak.stock_zh_a_spot_em 成功: 返回 {len(df)} 只股票, 耗时 {api_elapsed:.2f}s")
+                        logger.debug(f"[API返回] ak.stock_zh_a_spot_em 成功: 返回 {len(df)} 只股票, 耗时 {api_elapsed:.2f}s")
                         circuit_breaker.record_success(source_key)
                         break
                     except Exception as e:
@@ -875,7 +884,7 @@ class AkshareFetcher(BaseFetcher):
                     df = pd.DataFrame()
                 _realtime_cache['data'] = df
                 _realtime_cache['timestamp'] = current_time
-                logger.info(f"[缓存更新] A股实时行情(东财) 缓存已刷新，TTL={_realtime_cache['ttl']}s")
+                logger.debug(f"[缓存更新] A股实时行情(东财) 缓存已刷新，TTL={_realtime_cache['ttl']}s")
 
             if df is None or df.empty:
                 logger.info(f"[实时行情] A股实时行情数据为空，跳过 {stock_code}")
@@ -914,8 +923,8 @@ class AkshareFetcher(BaseFetcher):
                 low_52w=safe_float(row.get('52周最低')),
             )
             
-            logger.info(f"[实时行情-东财] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
-                       f"量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%")
+            logger.debug(f"[实时行情-东财] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
+                         f"量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%")
             return quote
             
         except Exception as e:
@@ -923,7 +932,13 @@ class AkshareFetcher(BaseFetcher):
             circuit_breaker.record_failure(source_key, str(e))
             return None
     
-    def _get_stock_realtime_quote_sina(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+    def _get_stock_realtime_quote_sina(
+        self,
+        stock_code: str,
+        *,
+        enforce_rate_limit: bool = True,
+        timeout: float = 10.0,
+    ) -> Optional[UnifiedRealtimeQuote]:
         """
         获取普通 A 股实时行情数据（新浪财经数据源）
         
@@ -945,12 +960,13 @@ class AkshareFetcher(BaseFetcher):
                 'User-Agent': random.choice(USER_AGENTS)
             }
             
-            logger.info(
+            logger.debug(
                 f"[API调用] 新浪财经接口获取 {stock_code} 实时行情: endpoint={SINA_REALTIME_ENDPOINT}, symbol={symbol}"
             )
             
-            self._enforce_rate_limit()
-            response = requests.get(url, headers=headers, timeout=10)
+            if enforce_rate_limit:
+                self._enforce_rate_limit()
+            response = requests.get(url, headers=headers, timeout=timeout)
             response.encoding = 'gbk'
             api_elapsed = time.time() - api_start
             
@@ -1051,7 +1067,7 @@ class AkshareFetcher(BaseFetcher):
                 pre_close=pre_close,
             )
             
-            logger.info(
+            logger.debug(
                 f"[实时行情-新浪] {stock_code} {quote.name}: endpoint={SINA_REALTIME_ENDPOINT}, "
                 f"价格={quote.price}, 涨跌={quote.change_pct}, 成交量={quote.volume}, elapsed={api_elapsed:.2f}s"
             )
@@ -1074,7 +1090,13 @@ class AkshareFetcher(BaseFetcher):
             circuit_breaker.record_failure(source_key, failure_message)
             return None
     
-    def _get_stock_realtime_quote_tencent(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+    def _get_stock_realtime_quote_tencent(
+        self,
+        stock_code: str,
+        *,
+        enforce_rate_limit: bool = True,
+        timeout: float = 10.0,
+    ) -> Optional[UnifiedRealtimeQuote]:
         """
         获取普通 A 股实时行情数据（腾讯财经数据源）
         
@@ -1096,12 +1118,13 @@ class AkshareFetcher(BaseFetcher):
                 'User-Agent': random.choice(USER_AGENTS)
             }
             
-            logger.info(
+            logger.debug(
                 f"[API调用] 腾讯财经接口获取 {stock_code} 实时行情: endpoint={TENCENT_REALTIME_ENDPOINT}, symbol={symbol}"
             )
             
-            self._enforce_rate_limit()
-            response = requests.get(url, headers=headers, timeout=10)
+            if enforce_rate_limit:
+                self._enforce_rate_limit()
+            response = requests.get(url, headers=headers, timeout=timeout)
             response.encoding = 'gbk'
             api_elapsed = time.time() - api_start
             
@@ -1201,7 +1224,7 @@ class AkshareFetcher(BaseFetcher):
                 total_mv=safe_float(fields[45]) * 100000000 if len(fields) > 45 and fields[45] else None,  # 总市值(亿->元)
             )
             
-            logger.info(
+            logger.debug(
                 f"[实时行情-腾讯] {stock_code} {quote.name}: endpoint={TENCENT_REALTIME_ENDPOINT}, "
                 f"价格={quote.price}, 涨跌={quote.change_pct}%, 量比={quote.volume_ratio}, "
                 f"换手率={quote.turnover_rate}%, elapsed={api_elapsed:.2f}s"
@@ -1224,6 +1247,61 @@ class AkshareFetcher(BaseFetcher):
             logger.info(failure_message)
             circuit_breaker.record_failure(source_key, failure_message)
             return None
+
+    def _get_etf_realtime_quote_direct(
+        self,
+        stock_code: str,
+        *,
+        source: str,
+    ) -> Optional[UnifiedRealtimeQuote]:
+        """Fetch ETF quotes through lightweight Sina/Tencent single-symbol APIs.
+
+        The Akshare/Efinance ETF list endpoints are batch web endpoints and
+        can be rate-limited during intraday monitoring. Sina/Tencent single
+        symbol quote APIs are used here as a low-cost fallback path.
+        """
+        cache_key = stock_code.strip()
+        now = time.time()
+        cached = _etf_direct_quote_cache.get(cache_key)
+        if cached:
+            age = now - float(cached.get("timestamp", 0) or 0)
+            quote = cached.get("quote")
+            if age <= _ETF_DIRECT_QUOTE_TTL and quote is not None:
+                logger.debug("[ETF直连缓存命中] %s age=%.1fs", stock_code, age)
+                return quote
+
+        quote = None
+        if source == "tencent":
+            quote = self._get_stock_realtime_quote_tencent(
+                stock_code,
+                enforce_rate_limit=False,
+                timeout=2.0,
+            )
+        elif source == "sina":
+            quote = self._get_stock_realtime_quote_sina(
+                stock_code,
+                enforce_rate_limit=False,
+                timeout=2.0,
+            )
+
+        if quote is not None and quote.has_basic_data():
+            _etf_direct_quote_cache[cache_key] = {"quote": quote, "timestamp": now}
+            logger.debug("[ETF直连行情] %s 使用 %s 成功: %.4f", stock_code, source, quote.price)
+            return quote
+
+        if cached:
+            age = now - float(cached.get("timestamp", 0) or 0)
+            stale_quote = cached.get("quote")
+            if age <= _ETF_DIRECT_QUOTE_STALE_TTL and stale_quote is not None:
+                logger.info(
+                    "[ETF直连行情] %s %s 失败，使用 %.0fs 前缓存价续命",
+                    stock_code,
+                    source,
+                    age,
+                )
+                return stale_quote
+
+        return None
     
     def _get_etf_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
@@ -1258,14 +1336,14 @@ class AkshareFetcher(BaseFetcher):
                         self._set_random_user_agent()
                         self._enforce_rate_limit()
 
-                        logger.info(f"[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt {attempt}/2)")
+                        logger.debug(f"[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt {attempt}/2)")
                         import time as _time
                         api_start = _time.time()
 
                         df = ak.fund_etf_spot_em()
 
                         api_elapsed = _time.time() - api_start
-                        logger.info(f"[API返回] ak.fund_etf_spot_em 成功: 返回 {len(df)} 只ETF, 耗时 {api_elapsed:.2f}s")
+                        logger.debug(f"[API返回] ak.fund_etf_spot_em 成功: 返回 {len(df)} 只ETF, 耗时 {api_elapsed:.2f}s")
                         circuit_breaker.record_success(source_key)
                         break
                     except Exception as e:
@@ -1281,7 +1359,7 @@ class AkshareFetcher(BaseFetcher):
                 _etf_realtime_cache['timestamp'] = current_time
 
             if df is None or df.empty:
-                logger.info(f"[实时行情] ETF实时行情数据为空，跳过 {stock_code}")
+                logger.debug(f"[实时行情] ETF实时行情数据为空，跳过 {stock_code}")
                 return None
             
             # 查找指定 ETF
@@ -1315,8 +1393,8 @@ class AkshareFetcher(BaseFetcher):
                 low_52w=safe_float(row.get('52周最低')),
             )
             
-            logger.info(f"[ETF实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
-                       f"换手率={quote.turnover_rate}%")
+            logger.debug(f"[ETF实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
+                         f"换手率={quote.turnover_rate}%")
             return quote
             
         except Exception as e:
@@ -1570,6 +1648,7 @@ class AkshareFetcher(BaseFetcher):
             'sh000688': '科创50',
             'sh000016': '上证50',
             'sh000300': '沪深300',
+            'sh000905': '中证500',
         }
 
         try:

@@ -1,6 +1,8 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { backtestApi } from '../api/backtest';
+import { portfolioApi } from '../api/portfolio';
 import { ApiErrorAlert, ConfirmDialog, Button, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
@@ -8,12 +10,28 @@ import { HistoryList } from '../components/history';
 import { ReportMarkdown, ReportSummary } from '../components/report';
 import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
+import { normalizeStockCode, removeMarketSuffix } from '../utils/normalizeQuery';
 import { getReportText, normalizeReportLanguage } from '../utils/reportLanguage';
+
+const toHoldingKey = (code?: string | null): string | null => {
+  if (!code) {
+    return null;
+  }
+  const normalized = normalizeStockCode(code);
+  if (!normalized) {
+    return null;
+  }
+  return removeMarketSuffix(normalized);
+};
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const autoLaunchKeyRef = useRef<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [holdingCodes, setHoldingCodes] = useState<Set<string>>(new Set());
+  const [portfolioLaunchMessage, setPortfolioLaunchMessage] = useState<string | null>(null);
 
   const {
     query,
@@ -37,6 +55,7 @@ const HomePage: React.FC = () => {
     refreshHistory,
     loadMoreHistory,
     selectHistoryItem,
+    selectLatestHistoryForStock,
     toggleHistorySelection,
     toggleSelectAllVisible,
     deleteSelectedHistory,
@@ -55,15 +74,40 @@ const HomePage: React.FC = () => {
   useEffect(() => {
     document.title = '每日选股分析 - DSA';
   }, []);
+
+  const loadHoldingCodes = useCallback(async () => {
+    try {
+      const snapshot = await portfolioApi.getSnapshot();
+      const next = new Set<string>();
+      for (const account of snapshot.accounts || []) {
+        for (const position of account.positions || []) {
+          const key = toHoldingKey(position.symbol);
+          if (key) {
+            next.add(key);
+          }
+        }
+      }
+      setHoldingCodes(next);
+    } catch {
+      setHoldingCodes(new Set());
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadHoldingCodes();
+  }, [loadHoldingCodes]);
+
   const reportLanguage = normalizeReportLanguage(selectedReport?.meta.reportLanguage);
   const reportText = getReportText(reportLanguage);
 
   useDashboardLifecycle({
     loadInitialHistory,
     refreshHistory,
+    refreshHoldingCodes: loadHoldingCodes,
     syncTaskCreated,
     syncTaskUpdated,
     syncTaskFailed,
+    selectLatestHistoryForStock,
     removeTask,
   });
 
@@ -76,7 +120,7 @@ const HomePage: React.FC = () => {
     (
       stockCode?: string,
       stockName?: string,
-      selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
+      selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image' | 'portfolio',
     ) => {
       void submitAnalysis({
         stockCode,
@@ -87,6 +131,41 @@ const HomePage: React.FC = () => {
     },
     [query, submitAnalysis],
   );
+
+  useEffect(() => {
+    const source = searchParams.get('source');
+    const stockCode = searchParams.get('analyze')?.trim();
+    if (source !== 'portfolio' || !stockCode) {
+      return;
+    }
+
+    const stockName = searchParams.get('name')?.trim() || undefined;
+    const forceRefresh = searchParams.get('force') === '1';
+    const launchKey = `${stockCode}:${stockName || ''}:${forceRefresh ? 'force' : 'normal'}`;
+    if (autoLaunchKeyRef.current === launchKey) {
+      return;
+    }
+    autoLaunchKeyRef.current = launchKey;
+
+    navigate('/', { replace: true });
+    setPortfolioLaunchMessage(
+      `${stockName || stockCode} 已从持仓发起回测分析；完成后首页会自动显示最新报告。`,
+    );
+    void backtestApi.run({
+      code: stockCode,
+      force: true,
+      minAgeDays: 0,
+    }).catch((err) => {
+      console.warn('Portfolio backtest launch failed:', err);
+    });
+    void submitAnalysis({
+      stockCode,
+      stockName,
+      originalQuery: stockCode,
+      selectionSource: 'portfolio',
+      forceRefresh,
+    });
+  }, [navigate, searchParams, submitAnalysis]);
 
   const handleAskFollowUp = useCallback(() => {
     if (selectedReport?.meta.id === undefined) {
@@ -124,6 +203,7 @@ const HomePage: React.FC = () => {
         <TaskPanel tasks={activeTasks} />
         <HistoryList
           items={historyItems}
+          holdingCodes={holdingCodes}
           isLoading={isLoadingHistory}
           isLoadingMore={isLoadingMore}
           hasMore={hasMore}
@@ -143,6 +223,7 @@ const HomePage: React.FC = () => {
       activeTasks,
       hasMore,
       historyItems,
+      holdingCodes,
       isDeletingHistory,
       isLoadingHistory,
       isLoadingMore,
@@ -234,6 +315,16 @@ const HomePage: React.FC = () => {
             ) : null}
           </div>
         ) : null}
+        {portfolioLaunchMessage ? (
+          <div className="px-3 pb-2 md:px-4">
+            <InlineAlert
+              variant="info"
+              title="持仓回测分析"
+              message={portfolioLaunchMessage}
+              className="rounded-xl px-3 py-2 text-xs shadow-none"
+            />
+          </div>
+        ) : null}
 
         <div className="flex-1 flex min-h-0 overflow-hidden">
           <div className="hidden min-h-0 w-64 shrink-0 flex-col overflow-hidden pl-4 pb-4 md:flex lg:w-72">
@@ -304,17 +395,19 @@ const HomePage: React.FC = () => {
                 <ReportSummary data={selectedReport} isHistory />
               </div>
             ) : (
-              <div className="flex h-full items-center justify-center">
-                <EmptyState
-                  title="开始分析"
-                  description="输入股票代码进行分析，或从左侧选择历史报告查看。"
-                  className="max-w-xl border-dashed"
-                  icon={(
-                    <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                  )}
-                />
+              <div className="flex min-h-full flex-col gap-4">
+                <div className="flex flex-1 items-center justify-center">
+                  <EmptyState
+                    title="开始分析"
+                    description="输入股票代码进行分析，或从左侧选择历史报告查看。"
+                    className="max-w-xl border-dashed"
+                    icon={(
+                      <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                      </svg>
+                    )}
+                  />
+                </div>
               </div>
             )}
           </section>

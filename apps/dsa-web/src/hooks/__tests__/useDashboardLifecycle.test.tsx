@@ -30,11 +30,13 @@ describe('useDashboardLifecycle', () => {
   it('loads history, refreshes on interval, and reacts to visibility changes', () => {
     const loadInitialHistory = vi.fn().mockResolvedValue(undefined);
     const refreshHistory = vi.fn().mockResolvedValue(undefined);
+    const refreshHoldingCodes = vi.fn().mockResolvedValue(undefined);
 
     renderHook(() =>
       useDashboardLifecycle({
         loadInitialHistory,
         refreshHistory,
+        refreshHoldingCodes,
         syncTaskCreated: vi.fn(),
         syncTaskUpdated: vi.fn(),
         syncTaskFailed: vi.fn(),
@@ -48,6 +50,7 @@ describe('useDashboardLifecycle', () => {
       vi.advanceTimersByTime(30_000);
     });
     expect(refreshHistory).toHaveBeenCalledWith(true);
+    expect(refreshHoldingCodes).toHaveBeenCalledTimes(1);
 
     act(() => {
       Object.defineProperty(document, 'visibilityState', {
@@ -58,6 +61,7 @@ describe('useDashboardLifecycle', () => {
     });
 
     expect(refreshHistory).toHaveBeenCalledTimes(2);
+    expect(refreshHoldingCodes).toHaveBeenCalledTimes(2);
   });
 
   it('cleans pending task removal timers on unmount', () => {
@@ -92,6 +96,7 @@ describe('useDashboardLifecycle', () => {
 
   it('refreshes history and removes completed tasks after the grace window', () => {
     const refreshHistory = vi.fn().mockResolvedValue(undefined);
+    const refreshHoldingCodes = vi.fn().mockResolvedValue(undefined);
     const syncTaskUpdated = vi.fn();
     const removeTask = vi.fn();
 
@@ -99,6 +104,7 @@ describe('useDashboardLifecycle', () => {
       useDashboardLifecycle({
         loadInitialHistory: vi.fn().mockResolvedValue(undefined),
         refreshHistory,
+        refreshHoldingCodes,
         syncTaskCreated: vi.fn(),
         syncTaskUpdated,
         syncTaskFailed: vi.fn(),
@@ -115,6 +121,7 @@ describe('useDashboardLifecycle', () => {
 
     expect(syncTaskUpdated).toHaveBeenCalledWith(completedTask);
     expect(refreshHistory).toHaveBeenCalledWith(true);
+    expect(refreshHoldingCodes).toHaveBeenCalledTimes(1);
 
     act(() => {
       vi.advanceTimersByTime(2_000);

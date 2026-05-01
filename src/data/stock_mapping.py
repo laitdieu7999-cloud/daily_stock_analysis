@@ -11,6 +11,13 @@ Shared stock code -> name mapping, used by analyzer, data_provider, and name_to_
 
 # Stock code -> name mapping (common stocks)
 STOCK_NAME_MAP = {
+    # === Broad indices / special watch symbols ===
+    "000300": "沪深300指数",
+    "000905": "中证500指数",
+    "NDX": "纳斯达克100指数",
+    "NDX100": "纳斯达克100指数",
+    "838394": "北交所838394",
+
     # === A-shares ===
     "600519": "贵州茅台",
     "000001": "平安银行",
@@ -92,7 +99,10 @@ STOCK_NAME_MAP = {
     # === HK stocks (5-digit) ===
     "00700": "腾讯控股",
     "03690": "美团",
-    "01810": "小米集团",
+    "01810": "小米集团-W",
+    "HK01810": "小米集团-W",
+    "02319": "蒙牛乳业",
+    "HK02319": "蒙牛乳业",
     "09988": "阿里巴巴",
     "09618": "京东集团",
     "09888": "百度集团",

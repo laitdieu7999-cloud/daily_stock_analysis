@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.laitdieu.daily-stock-analysis.metaphysical.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>/Users/laitdieu/Documents/github/daily_stock_analysis/scripts/run_metaphysical_local_scheduler.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/laitdieu/Documents/github/daily_stock_analysis</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>PYTHONUTF8</key>
+    <string>1</string>
+    <key>PYTHONIOENCODING</key>
+    <string>utf-8</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/laitdieu/Library/Application Support/Daily Stock Analysis/logs/metaphysical-launchdaemon.stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/laitdieu/Library/Application Support/Daily Stock Analysis/logs/metaphysical-launchdaemon.stderr.log</string>
+</dict>
+</plist>

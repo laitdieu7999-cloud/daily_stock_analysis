@@ -1,12 +1,14 @@
 import type React from 'react';
-import { useRef, useCallback, useEffect, useId } from 'react';
+import { useRef, useCallback, useEffect, useId, useMemo } from 'react';
 import type { HistoryItem } from '../../types/analysis';
+import { normalizeStockCode, removeMarketSuffix } from '../../utils/normalizeQuery';
 import { Badge, Button, ScrollArea } from '../common';
 import { DashboardPanelHeader, DashboardStateBlock } from '../dashboard';
 import { HistoryListItem } from './HistoryListItem';
 
 interface HistoryListProps {
   items: HistoryItem[];
+  holdingCodes?: Set<string>;
   isLoading: boolean;
   isLoadingMore: boolean;
   hasMore: boolean;
@@ -27,6 +29,7 @@ interface HistoryListProps {
  */
 export const HistoryList: React.FC<HistoryListProps> = ({
   items,
+  holdingCodes,
   isLoading,
   isLoadingMore,
   hasMore,
@@ -40,13 +43,61 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   onDeleteSelected,
   className = '',
 }) => {
+  const toHoldingKey = (code?: string | null): string | null => {
+    if (!code) {
+      return null;
+    }
+    const normalized = normalizeStockCode(code);
+    if (!normalized) {
+      return null;
+    }
+    return removeMarketSuffix(normalized);
+  };
+
+  const getAdvicePriority = (advice?: string): number => {
+    const normalized = advice?.trim() || '';
+    if (normalized.includes('减仓') || normalized.includes('卖')) {
+      return 0;
+    }
+    if (normalized.includes('买') || normalized.includes('布局')) {
+      return 1;
+    }
+    return 2;
+  };
+
+  const sortedItems = useMemo(() => {
+    return [...items].sort((left, right) => {
+      const leftKey = toHoldingKey(left.stockCode);
+      const rightKey = toHoldingKey(right.stockCode);
+      const leftHolding = leftKey ? (holdingCodes?.has(leftKey) ?? false) : false;
+      const rightHolding = rightKey ? (holdingCodes?.has(rightKey) ?? false) : false;
+
+      if (leftHolding !== rightHolding) {
+        return leftHolding ? -1 : 1;
+      }
+
+      const adviceGap = getAdvicePriority(left.operationAdvice) - getAdvicePriority(right.operationAdvice);
+      if (adviceGap !== 0) {
+        return adviceGap;
+      }
+
+      const leftTime = Date.parse(left.createdAt || '') || 0;
+      const rightTime = Date.parse(right.createdAt || '') || 0;
+      if (leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+
+      return right.id - left.id;
+    });
+  }, [items, holdingCodes]);
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const selectAllId = useId();
 
-  const selectedCount = items.filter((item) => selectedIds.has(item.id)).length;
-  const allVisibleSelected = items.length > 0 && selectedCount === items.length;
+  const selectedCount = sortedItems.filter((item) => selectedIds.has(item.id)).length;
+  const allVisibleSelected = sortedItems.length > 0 && selectedCount === sortedItems.length;
   const someVisibleSelected = selectedCount > 0 && !allVisibleSelected;
 
   // 使用 IntersectionObserver 检测滚动到底部
@@ -111,7 +162,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
             }
           />
 
-          {items.length > 0 && (
+          {sortedItems.length > 0 && (
             <div className="flex items-center gap-2">
               <label
                 className="flex flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 py-1"
@@ -149,7 +200,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
             compact
             title="加载历史记录中..."
           />
-        ) : items.length === 0 ? (
+        ) : sortedItems.length === 0 ? (
           <DashboardStateBlock
             title="暂无历史分析记录"
             description="完成首次分析后，这里会保留最近结果。"
@@ -161,11 +212,15 @@ export const HistoryList: React.FC<HistoryListProps> = ({
           />
         ) : (
           <div className="space-y-2">
-            {items.map((item) => (
+            {sortedItems.map((item) => (
               <HistoryListItem
                 key={item.id}
                 item={item}
                 isViewing={selectedId === item.id}
+                isHolding={(() => {
+                  const key = toHoldingKey(item.stockCode);
+                  return key ? (holdingCodes?.has(key) ?? false) : false;
+                })()}
                 isChecked={selectedIds.has(item.id)}
                 isDeleting={isDeleting}
                 onToggleChecked={onToggleItemSelection}
@@ -181,7 +236,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
               </div>
             )}
 
-            {!hasMore && items.length > 0 && (
+            {!hasMore && sortedItems.length > 0 && (
               <div className="text-center py-5">
                 <div className="h-px bg-subtle w-full mb-3" />
                 <span className="text-[10px] text-secondary-text uppercase tracking-[0.2em]">已到底部</span>

@@ -140,10 +140,10 @@ class ReportSummary(BaseModel):
 class ReportStrategy(BaseModel):
     """策略点位区"""
     
-    ideal_buy: Optional[str] = Field(None, description="理想买入价")
-    secondary_buy: Optional[str] = Field(None, description="第二买入价")
-    stop_loss: Optional[str] = Field(None, description="止损价")
-    take_profit: Optional[str] = Field(None, description="止盈价")
+    ideal_buy: Optional[str] = Field(None, description="买入区")
+    secondary_buy: Optional[str] = Field(None, description="加仓区")
+    stop_loss: Optional[str] = Field(None, description="止损线")
+    take_profit: Optional[str] = Field(None, description="目标区")
 
 
 class ReportDetails(BaseModel):
@@ -156,6 +156,9 @@ class ReportDetails(BaseModel):
     dividend_metrics: Optional[Any] = Field(None, description="结构化分红指标（含 TTM 口径）")
     belong_boards: Optional[Any] = Field(None, description="关联板块列表")
     sector_rankings: Optional[Any] = Field(None, description="板块涨跌榜（结构 {top, bottom}）")
+    portfolio_position: Optional[Any] = Field(None, description="分析时匹配到的当前持仓摘要")
+    market_snapshot: Optional[Any] = Field(None, description="分析时行情快照（含价格、时间、来源）")
+    data_sources: Optional[str] = Field(None, description="分析使用的数据源摘要")
 
 
 class AnalysisReport(BaseModel):
@@ -206,3 +209,19 @@ class MarkdownReportResponse(BaseModel):
                 "content": "# 📊 贵州茅台 (600519) 分析报告\n\n> 分析日期：**2024-01-01**\n\n..."
             }
         }
+
+
+class ArchiveInsightItem(BaseModel):
+    """长期归档洞察条目"""
+
+    key: str = Field(..., description="稳定键名")
+    title: str = Field(..., description="展示标题")
+    path: str = Field(..., description="本地文件路径")
+    updated_at: Optional[str] = Field(None, description="文件更新时间")
+    content: str = Field(..., description="Markdown 内容")
+
+
+class ArchiveInsightsResponse(BaseModel):
+    """长期归档洞察列表响应"""
+
+    items: List[ArchiveInsightItem] = Field(default_factory=list, description="洞察列表")

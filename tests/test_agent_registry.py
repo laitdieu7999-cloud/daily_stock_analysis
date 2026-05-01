@@ -871,6 +871,21 @@ class TestSkillDefaultResolution(unittest.TestCase):
         self.assertEqual(get_default_router_skill_ids(skills), ["eta"])
         self.assertEqual(get_primary_default_skill_id(skills), "eta")
 
+    def test_primary_default_prefers_builtin_bull_trend_when_present(self):
+        from src.agent.skills.defaults import (
+            get_default_active_skill_ids,
+            get_primary_default_skill_id,
+        )
+
+        skills = [
+            Skill(name="bollinger_five_state", display_name="Bollinger", description="b", instructions="i", default_active=True, default_priority=5),
+            Skill(name="bull_trend", display_name="Bull Trend", description="t", instructions="i", default_active=True, default_priority=20),
+            Skill(name="macro_cycle_positioning", display_name="Macro", description="m", instructions="i", default_active=True, default_priority=8),
+        ]
+
+        self.assertEqual(get_default_active_skill_ids(skills), ["bull_trend"])
+        self.assertEqual(get_primary_default_skill_id(skills), "bull_trend")
+
 
 class TestSkillAgent(unittest.TestCase):
     def test_skill_agent_uses_required_tools_only(self):

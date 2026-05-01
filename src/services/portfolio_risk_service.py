@@ -10,6 +10,20 @@ from src.config import Config, get_config
 from src.repositories.portfolio_repo import PortfolioRepository
 from src.services.portfolio_service import PortfolioService
 
+LOCAL_PRIMARY_SECTOR_BY_SYMBOL: Dict[str, str] = {
+    "159201": "自由现金",
+    "159326": "电网设备",
+    "159613": "信息安全",
+    "159647": "中药",
+    "159869": "游戏传媒",
+    "159937": "黄金",
+    "512980": "传媒",
+}
+
+ETF_CODE_PREFIXES = ("15", "16", "50", "51", "52", "56", "58")
+BSE_CODE_PREFIXES = ("43", "83", "87")
+PROCESS_PRIMARY_SECTOR_CACHE: Dict[Tuple[str, str], str] = {}
+
 
 class PortfolioRiskService:
     """Compute portfolio risk blocks on top of replayed snapshot data."""
@@ -281,10 +295,24 @@ class PortfolioRiskService:
         cache_key = (symbol, market)
         if cache_key in board_cache:
             return board_cache[cache_key]
+        if cache_key in PROCESS_PRIMARY_SECTOR_CACHE:
+            board_cache[cache_key] = PROCESS_PRIMARY_SECTOR_CACHE[cache_key]
+            return board_cache[cache_key]
 
         if market != "cn":
             coverage["unclassified_count"] += 1
             board_cache[cache_key] = "UNCLASSIFIED"
+            PROCESS_PRIMARY_SECTOR_CACHE[cache_key] = board_cache[cache_key]
+            return board_cache[cache_key]
+
+        local_sector = self._resolve_local_primary_sector(symbol)
+        if local_sector is not None:
+            if local_sector == "UNCLASSIFIED":
+                coverage["unclassified_count"] += 1
+            else:
+                coverage["classified_count"] += 1
+            board_cache[cache_key] = local_sector
+            PROCESS_PRIMARY_SECTOR_CACHE[cache_key] = board_cache[cache_key]
             return board_cache[cache_key]
 
         try:
@@ -293,6 +321,7 @@ class PortfolioRiskService:
             if sector_name:
                 coverage["classified_count"] += 1
                 board_cache[cache_key] = sector_name
+                PROCESS_PRIMARY_SECTOR_CACHE[cache_key] = board_cache[cache_key]
                 return board_cache[cache_key]
         except Exception as exc:
             coverage["failed_count"] += 1
@@ -300,7 +329,25 @@ class PortfolioRiskService:
 
         coverage["unclassified_count"] += 1
         board_cache[cache_key] = "UNCLASSIFIED"
+        PROCESS_PRIMARY_SECTOR_CACHE[cache_key] = board_cache[cache_key]
         return board_cache[cache_key]
+
+    @staticmethod
+    def _resolve_local_primary_sector(symbol: str) -> Optional[str]:
+        digits = "".join(ch for ch in str(symbol or "").strip().upper() if ch.isdigit())
+        if not digits:
+            return None
+
+        if digits in LOCAL_PRIMARY_SECTOR_BY_SYMBOL:
+            return LOCAL_PRIMARY_SECTOR_BY_SYMBOL[digits]
+
+        if digits.startswith(ETF_CODE_PREFIXES):
+            return "ETF"
+
+        if digits.startswith(BSE_CODE_PREFIXES):
+            return "UNCLASSIFIED"
+
+        return None
 
     def _fetch_belong_boards(self, symbol: str) -> List[Dict[str, Any]]:
         manager = self._get_data_manager()

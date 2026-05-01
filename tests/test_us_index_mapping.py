@@ -22,7 +22,7 @@ class TestIsUsIndexCode(unittest.TestCase):
 
     def test_known_indices(self):
         """Known US index codes should return True"""
-        indices = ['SPX', 'DJI', 'DJIA', 'IXIC', 'NASDAQ', 'NDX', 'VIX', 'RUT']
+        indices = ['SPX', 'DJI', 'DJIA', 'IXIC', 'NASDAQ', 'NDX', 'NDX100', 'VIX', 'RUT']
         for code in indices:
             with self.subTest(code=code):
                 self.assertTrue(is_us_index_code(code), f"{code} should be recognized as US index")
@@ -101,7 +101,7 @@ class TestIsUsStockCode(unittest.TestCase):
 
     def test_us_indices_not_stocks(self):
         """US index codes should NOT be recognized as stocks"""
-        indices = ['SPX', 'DJI', 'DJIA', 'IXIC', 'NASDAQ', 'NDX', 'VIX', 'RUT', '^GSPC']
+        indices = ['SPX', 'DJI', 'DJIA', 'IXIC', 'NASDAQ', 'NDX', 'NDX100', 'VIX', 'RUT', '^GSPC']
         for code in indices:
             with self.subTest(code=code):
                 self.assertFalse(is_us_stock_code(code), f"{code} should NOT be a US stock")
@@ -162,6 +162,12 @@ class TestGetUsIndexYfSymbol(unittest.TestCase):
         symbol, name = get_us_index_yf_symbol('VIX')
         self.assertEqual(symbol, '^VIX')
         self.assertEqual(name, 'VIX恐慌指数')
+
+    def test_ndx100_alias_mapping(self):
+        """NDX100 should map to Nasdaq 100 Yahoo symbol."""
+        symbol, name = get_us_index_yf_symbol('NDX100')
+        self.assertEqual(symbol, '^NDX')
+        self.assertEqual(name, '纳斯达克100指数')
 
     def test_case_insensitive(self):
         """Mapping should be case-insensitive"""

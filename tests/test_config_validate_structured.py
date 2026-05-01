@@ -109,6 +109,39 @@ class TestValidateStructuredHappyPath:
         assert warnings == []
 
 
+class TestValidateStructuredCustomExtensions:
+    def test_invalid_close_reminder_time_is_warning_when_enabled(self):
+        cfg = _make_config(
+            close_reminder_enabled=True,
+            close_reminder_time="25:61",
+        )
+        issues = cfg.validate_structured()
+        assert any(i.field == "CLOSE_REMINDER_TIME" and i.severity == "warning" for i in issues)
+
+    def test_invalid_premarket_health_check_time_is_warning_when_enabled(self):
+        cfg = _make_config(
+            premarket_health_check_enabled=True,
+            premarket_health_check_time="25:61",
+        )
+        issues = cfg.validate_structured()
+        assert any(i.field == "PREMARKET_HEALTH_CHECK_TIME" and i.severity == "warning" for i in issues)
+
+    def test_invalid_nightly_market_outlook_time_is_warning_when_enabled(self):
+        cfg = _make_config(
+            nightly_market_outlook_enabled=True,
+            nightly_market_outlook_time="25:61",
+        )
+        issues = cfg.validate_structured()
+        assert any(i.field == "NIGHTLY_MARKET_OUTLOOK_TIME" and i.severity == "warning" for i in issues)
+
+    def test_metaphysical_enabled_emits_info(self):
+        cfg = _make_config(
+            enable_metaphysical_features=True,
+        )
+        issues = cfg.validate_structured()
+        assert any(i.field == "ENABLE_METAPHYSICAL_FEATURES" and i.severity == "info" for i in issues)
+
+
 # ---------------------------------------------------------------------------
 # validate_structured() — stock list
 # ---------------------------------------------------------------------------

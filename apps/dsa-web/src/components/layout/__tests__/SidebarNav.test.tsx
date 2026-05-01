@@ -37,7 +37,7 @@ describe('SidebarNav', () => {
     );
 
     expect(screen.getByTestId('chat-completion-badge')).toBeInTheDocument();
-    expect(screen.getByLabelText('问股有新消息')).toBeInTheDocument();
+    expect(screen.getByLabelText('机会有新消息')).toBeInTheDocument();
 
     completionBadgeState.value = false;
     rerender(
@@ -74,5 +74,24 @@ describe('SidebarNav', () => {
     expect(await screen.findByRole('heading', { name: '退出登录' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '确认退出' }));
     expect(mockLogout).toHaveBeenCalled();
+  });
+
+  it('uses the requested main navigation order', () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    const links = screen.getAllByRole('link');
+    const labels = links.map((link) => link.getAttribute('aria-label'));
+
+    expect(labels.slice(0, 6)).toEqual(['今日', 'IC', '持仓', '机会', '研究', '系统']);
+    expect(labels.indexOf('IC')).toBe(1);
+    expect(labels).not.toContain('数据');
+    expect(labels).not.toContain('回测');
+    expect(labels).not.toContain('纸面');
+    expect(labels).not.toContain('问股');
+    expect(labels).not.toContain('设置');
   });
 });

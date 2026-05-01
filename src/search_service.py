@@ -13,6 +13,7 @@ A股自选股智能分析系统 - 搜索服务模块
 
 import logging
 import re
+import shutil
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -40,6 +41,9 @@ from src.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SEARXNG_MODE_INFO_LOGGED = False
+_NEWS_WINDOW_INFO_LOGGED = False
 
 # Transient network errors (retryable)
 _SEARCH_TRANSIENT_EXCEPTIONS = (
@@ -1684,6 +1688,220 @@ class BraveSearchProvider(BaseSearchProvider):
         )
 
 
+class Jin10SearchProvider(BaseSearchProvider):
+    """金十数据搜索提供者 - 通过 MCP 协议获取财经快讯和新闻
+
+    金十数据使用 MCP 协议（JSON-RPC over SSE），通过 subprocess 调用
+    ``npx mcp-remote`` 作为 stdio 桥接与远程 MCP 服务通信。
+
+    可用工具：
+    - list_flash / search_flash: 实时快讯
+    - list_news / search_news: 资讯列表
+    - get_quote: 行情报价
+    """
+
+    def __init__(self, api_key: str):
+        super().__init__([api_key], "Jin10")
+        self._api_key = api_key
+        self._proc = None  # mcp-remote 子进程
+        self._initialized = False
+        self._mcp_remote_cmd = self._resolve_mcp_remote_command()
+
+    @staticmethod
+    def _resolve_mcp_remote_command() -> Optional[List[str]]:
+        npx_path = shutil.which("npx")
+        if not npx_path:
+            logger.warning("[Jin10] 未找到 npx，Jin10 MCP 搜索能力将自动降级为不可用")
+            return None
+        return [npx_path, "mcp-remote"]
+
+    # ------------------------------------------------------------------
+    # MCP 会话管理
+    # ------------------------------------------------------------------
+
+    def _ensure_initialized(self) -> None:
+        """确保 MCP 会话已初始化（懒启动）。"""
+        if self._initialized and self._proc and self._proc.poll() is None:
+            return
+
+        if not self._mcp_remote_cmd:
+            return
+
+        import subprocess
+
+        # 如果旧进程已退出，先清理
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+            except OSError:
+                pass
+
+        self._proc = subprocess.Popen(
+            [
+                *self._mcp_remote_cmd,
+                "https://mcp.jin10.com/mcp",
+                "--header", f"Authorization: Bearer {self._api_key}",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+
+        # 1) 发送 initialize 请求
+        self._send({
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "dsa", "version": "1.0"},
+            },
+            "id": 1,
+        })
+        time.sleep(1)
+        self._read()  # 消费初始化响应
+
+        # 2) 发送 initialized 通知
+        self._send({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        })
+        time.sleep(0.5)
+
+        self._initialized = True
+        logger.debug("[Jin10] MCP 会话初始化完成")
+
+    def _send(self, msg: dict) -> None:
+        """向 mcp-remote 子进程 stdin 写入一行 JSON。"""
+        data = (json.dumps(msg) + "\n").encode("utf-8")
+        assert self._proc and self._proc.stdin
+        self._proc.stdin.write(data)
+        self._proc.stdin.flush()
+
+    def _read(self, timeout: float = 5) -> str:
+        """从 mcp-remote 子进程 stdout 读取可用数据（非阻塞轮询）。"""
+        import select
+        import os as _os
+
+        assert self._proc and self._proc.stdout
+        output = b""
+        start = time.time()
+        while time.time() - start < timeout:
+            ready, _, _ = select.select([self._proc.stdout], [], [], 0.3)
+            if ready:
+                chunk = _os.read(self._proc.stdout.fileno(), 65536)
+                if chunk:
+                    output += chunk
+                else:
+                    break
+        return output.decode(errors="replace")
+
+    def _call_tool(self, tool_name: str, arguments: Optional[dict] = None) -> Any:
+        """调用 MCP 工具并返回解析后的结果。"""
+        self._ensure_initialized()
+
+        msg = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments or {},
+            },
+            "id": hash(tool_name) % 10000,
+        }
+        self._send(msg)
+        time.sleep(2)
+        output = self._read(timeout=5)
+
+        # 解析 SSE 格式的 JSON-RPC 响应
+        for line in output.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    data = json.loads(line)
+                    if "result" in data:
+                        content = data["result"].get("content", [])
+                        if content and content[0].get("type") == "text":
+                            return json.loads(content[0]["text"])
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+        return None
+
+    # ------------------------------------------------------------------
+    # BaseSearchProvider 接口实现
+    # ------------------------------------------------------------------
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+    ) -> SearchResponse:
+        """Jin10 不走基类的 _execute_search 流程，由 search() 直接驱动。"""
+        raise NotImplementedError("Jin10 使用自定义 search() 方法")
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        days: int = 7,
+    ) -> SearchResponse:
+        """搜索金十快讯和新闻，返回合并结果。"""
+        results: List[SearchResult] = []
+
+        # 搜索快讯
+        try:
+            flash_data = self._call_tool("search_flash", {"keyword": query})
+            if flash_data and isinstance(flash_data, dict):
+                items = flash_data.get("data", {}).get("items", [])
+                for item in items[:max_results]:
+                    results.append(SearchResult(
+                        title=item.get("content", "")[:80],
+                        url=item.get("url", ""),
+                        snippet=item.get("content", ""),
+                        source="jin10_flash",
+                        published_date=item.get("time", ""),
+                    ))
+        except Exception as e:
+            logger.warning("[Jin10] 快讯搜索失败: %s", e)
+
+        # 搜索新闻
+        try:
+            news_data = self._call_tool("search_news", {"keyword": query})
+            if news_data and isinstance(news_data, dict):
+                items = news_data.get("data", {}).get("items", [])
+                for item in items[:max_results]:
+                    results.append(SearchResult(
+                        title=item.get("title", ""),
+                        url=item.get("url", ""),
+                        snippet=item.get("introduction", ""),
+                        source="jin10_news",
+                        published_date=item.get("time", ""),
+                    ))
+        except Exception as e:
+            logger.warning("[Jin10] 新闻搜索失败: %s", e)
+
+        logger.info(
+            "[Jin10] 搜索 '%s' 完成，返回 %d 条结果",
+            query,
+            len(results),
+        )
+        return SearchResponse(results=results, query=query, provider=self._name)
+
+    def close(self) -> None:
+        """终止 mcp-remote 子进程，释放资源。"""
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+            except OSError:
+                pass
+            self._proc = None
+            self._initialized = False
+            logger.info("[Jin10] MCP 子进程已终止")
+
+
 class SearXNGSearchProvider(BaseSearchProvider):
     """
     SearXNG search engine (self-hosted, no quota).
@@ -1699,10 +1917,12 @@ class SearXNGSearchProvider(BaseSearchProvider):
     PUBLIC_INSTANCES_POOL_LIMIT = 20
     PUBLIC_INSTANCES_MAX_ATTEMPTS = 3
     PUBLIC_INSTANCES_TIMEOUT_SECONDS = 5
+    PUBLIC_INSTANCES_RATE_LIMIT_BACKOFF_SECONDS = 180
     SELF_HOSTED_TIMEOUT_SECONDS = 10
 
     _public_instances_cache: Optional[Tuple[float, List[str]]] = None
     _public_instances_stale_retry_after: float = 0.0
+    _public_instances_rate_limit_retry_after: float = 0.0
     _public_instances_lock = threading.Lock()
 
     def __init__(self, base_urls: Optional[List[str]] = None, *, use_public_instances: bool = False):
@@ -1723,6 +1943,15 @@ class SearXNGSearchProvider(BaseSearchProvider):
         with cls._public_instances_lock:
             cls._public_instances_cache = None
             cls._public_instances_stale_retry_after = 0.0
+            cls._public_instances_rate_limit_retry_after = 0.0
+
+    @classmethod
+    def _activate_public_rate_limit_backoff(cls) -> None:
+        """Temporarily suppress repeated public-instance searches after 429s."""
+        with cls._public_instances_lock:
+            retry_after = time.time() + cls.PUBLIC_INSTANCES_RATE_LIMIT_BACKOFF_SECONDS
+            if retry_after > cls._public_instances_rate_limit_retry_after:
+                cls._public_instances_rate_limit_retry_after = retry_after
 
     @staticmethod
     def _parse_http_error(response) -> str:
@@ -1904,6 +2133,8 @@ class SearXNGSearchProvider(BaseSearchProvider):
 
             if response.status_code != 200:
                 error_msg = self._parse_http_error(response)
+                if self._use_public_instances and response.status_code == 429:
+                    self._activate_public_rate_limit_backoff()
                 if response.status_code == 403:
                     error_msg = (
                         f"{error_msg}；SearXNG 实例可能未启用 JSON 输出（请检查 settings.yml），"
@@ -2022,6 +2253,16 @@ class SearXNGSearchProvider(BaseSearchProvider):
             timeout = self.SELF_HOSTED_TIMEOUT_SECONDS
             empty_error = "SearXNG 未配置可用实例"
         elif self._use_public_instances:
+            retry_after = self._public_instances_rate_limit_retry_after
+            if retry_after > start_time:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message="公共 SearXNG 实例限流退避中，稍后重试",
+                    search_time=time.time() - start_time,
+                )
             public_instances = self._get_public_instances()
             candidates = self._rotate_candidates(
                 public_instances,
@@ -2070,6 +2311,15 @@ class SearXNGSearchProvider(BaseSearchProvider):
 
             errors.append(f"{base_url}: {response.error_message or '未知错误'}")
             logger.warning("[%s] 实例 %s 搜索失败: %s", self.name, base_url, response.error_message)
+            if (
+                self._use_public_instances
+                and self._public_instances_rate_limit_retry_after > time.time()
+            ):
+                logger.info(
+                    "[%s] 公共实例已触发限流退避，停止继续轮询剩余实例，交由后续回退源处理",
+                    self.name,
+                )
+                break
 
         elapsed = time.time() - start_time
         return SearchResponse(
@@ -2129,6 +2379,7 @@ class SearchService:
         searxng_public_instances_enabled: bool = True,
         news_max_age_days: int = 3,
         news_strategy_profile: str = "short",
+        jin10_key: Optional[str] = None,
     ):
         """
         初始化搜索服务
@@ -2144,6 +2395,7 @@ class SearchService:
             searxng_public_instances_enabled: 未配置自建实例时，是否自动使用公共 SearXNG 实例
             news_max_age_days: 新闻最大时效（天）
             news_strategy_profile: 新闻窗口策略档位（ultra_short/short/medium/long）
+            jin10_key: 金十数据 API Key（通过 MCP 协议获取财经快讯）
         """
         self._providers: List[BaseSearchProvider] = []
         self.news_max_age_days = max(1, news_max_age_days)
@@ -2162,6 +2414,7 @@ class SearchService:
             self.news_strategy_profile,
             NEWS_STRATEGY_WINDOWS["short"],
         )
+        global _SEARXNG_MODE_INFO_LOGGED, _NEWS_WINDOW_INFO_LOGGED
 
         # 初始化搜索引擎（按优先级排序）
         # 1. Bocha 优先（中文搜索优化，AI摘要）
@@ -2189,7 +2442,12 @@ class SearchService:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
 
-        # 6. SearXNG（自建实例优先；未配置时可自动发现公共实例）
+        # 6. Jin10 数据（专业财经快讯，通过 MCP 协议）
+        if jin10_key:
+            self._providers.append(Jin10SearchProvider(jin10_key))
+            logger.info("已配置金十数据搜索")
+
+        # 7. SearXNG（自建实例优先；未配置时可自动发现公共实例）
         searxng_provider = SearXNGSearchProvider(
             searxng_base_urls,
             use_public_instances=bool(searxng_public_instances_enabled and not searxng_base_urls),
@@ -2197,9 +2455,13 @@ class SearchService:
         if searxng_provider.is_available:
             self._providers.append(searxng_provider)
             if searxng_base_urls:
-                logger.info("已配置 SearXNG 搜索，共 %s 个自建实例", len(searxng_base_urls))
+                if not _SEARXNG_MODE_INFO_LOGGED:
+                    logger.info("已配置 SearXNG 搜索，共 %s 个自建实例", len(searxng_base_urls))
+                    _SEARXNG_MODE_INFO_LOGGED = True
             else:
-                logger.info("已启用 SearXNG 公共实例自动发现模式")
+                if not _SEARXNG_MODE_INFO_LOGGED:
+                    logger.info("已启用 SearXNG 公共实例自动发现模式")
+                    _SEARXNG_MODE_INFO_LOGGED = True
 
         # 7. Anspire Search（实时智能搜索优化）
         if anspire_keys:
@@ -2215,13 +2477,15 @@ class SearchService:
         self._cache_inflight: Dict[str, threading.Event] = {}
         # Default cache TTL in seconds (10 minutes)
         self._cache_ttl: int = 600
-        logger.info(
-            "新闻时效策略已启用: profile=%s, profile_days=%s, NEWS_MAX_AGE_DAYS=%s, effective_window=%s",
-            self.news_strategy_profile,
-            self.news_profile_days,
-            self.news_max_age_days,
-            self.news_window_days,
-        )
+        if not _NEWS_WINDOW_INFO_LOGGED:
+            logger.info(
+                "新闻时效策略已启用: profile=%s, profile_days=%s, NEWS_MAX_AGE_DAYS=%s, effective_window=%s",
+                self.news_strategy_profile,
+                self.news_profile_days,
+                self.news_max_age_days,
+                self.news_window_days,
+            )
+            _NEWS_WINDOW_INFO_LOGGED = True
     
     @staticmethod
     def _is_foreign_stock(stock_code: str) -> bool:
@@ -2891,7 +3155,20 @@ class SearchService:
                     success=True,
                     error_message=None,
                 )
-            
+
+            if not self._is_foreign_stock(stock_code):
+                akshare_response = self._search_stock_news_via_akshare_em(
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    query=query,
+                    search_days=search_days,
+                    max_results=max_results,
+                )
+                if akshare_response.success and akshare_response.results:
+                    logger.info("搜索引擎全部失败，已回退到 AKShare-Eastmoney 新闻源")
+                    self._put_cache(cache_key, akshare_response)
+                    return akshare_response
+
             # 所有引擎都失败
             return SearchResponse(
                 query=query,
@@ -2903,6 +3180,82 @@ class SearchService:
         finally:
             if cache_owner and cache_event is not None:
                 self._release_cache_fill(cache_key, cache_event)
+
+    def _search_stock_news_via_akshare_em(
+        self,
+        *,
+        stock_code: str,
+        stock_name: str,
+        query: str,
+        search_days: int,
+        max_results: int,
+    ) -> SearchResponse:
+        """Fallback latest-news search via AKShare Eastmoney stock news."""
+        try:
+            import akshare as ak
+        except ImportError:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="AKShare-Eastmoney",
+                success=False,
+                error_message="akshare 未安装",
+            )
+
+        try:
+            df = ak.stock_news_em(symbol=stock_code)
+        except Exception as exc:
+            logger.warning("[AKShare-Eastmoney] %s(%s) 新闻抓取失败: %s", stock_name, stock_code, exc)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="AKShare-Eastmoney",
+                success=False,
+                error_message=str(exc),
+            )
+
+        if df is None or df.empty:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="AKShare-Eastmoney",
+                success=False,
+                error_message="未返回新闻数据",
+            )
+
+        results: List[SearchResult] = []
+        sample_size = max(max_results * self.NEWS_OVERSAMPLE_FACTOR, max_results)
+        for _, row in df.head(sample_size).iterrows():
+            title = str(row.get("新闻标题") or "").strip()
+            snippet = str(row.get("新闻内容") or "").strip()
+            url = str(row.get("新闻链接") or "").strip()
+            source = str(row.get("文章来源") or "东方财富").strip() or "东方财富"
+            published_date = str(row.get("发布时间") or "").strip() or None
+            if not title:
+                continue
+            results.append(
+                SearchResult(
+                    title=title,
+                    snippet=snippet[:500],
+                    url=url,
+                    source=source,
+                    published_date=published_date,
+                )
+            )
+
+        response = SearchResponse(
+            query=query,
+            results=results,
+            provider="AKShare-Eastmoney",
+            success=bool(results),
+            error_message=None if results else "新闻结果为空",
+        )
+        return self._filter_news_response(
+            response,
+            search_days=search_days,
+            max_results=max_results,
+            log_scope=f"{stock_code}:AKShare-Eastmoney:stock_news",
+        )
     
     def search_stock_events(
         self,
@@ -3158,6 +3511,19 @@ class SearchService:
                 )
             else:
                 logger.warning(f"[情报搜索] {dim['desc']}: 搜索失败 - {response.error_message}")
+                if (
+                    len(available_providers) == 1
+                    and provider.name == "SearXNG"
+                    and response.error_message
+                    and "公共 SearXNG 实例限流退避中" in response.error_message
+                ):
+                    logger.info(
+                        "[情报搜索] %s(%s): 当前仅有 SearXNG 可用且处于限流退避中，"
+                        "跳过本轮剩余维度以加快落盘",
+                        stock_name,
+                        stock_code,
+                    )
+                    break
             
             # 短暂延迟避免请求过快
             time.sleep(0.5)
@@ -3446,6 +3812,7 @@ def get_search_service() -> SearchService:
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
                     news_max_age_days=config.news_max_age_days,
                     news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
+                    jin10_key=getattr(config, "jin10_api_key", ""),
                 )
     
     return _search_service

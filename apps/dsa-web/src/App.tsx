@@ -3,11 +3,16 @@ import { useEffect } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import HomePage from './pages/HomePage';
 import BacktestPage from './pages/BacktestPage';
+import ICAnnualizedPage from './pages/ICAnnualizedPage';
 import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ChatPage from './pages/ChatPage';
 import PortfolioPage from './pages/PortfolioPage';
+import ReviewPage from './pages/ReviewPage';
+import DataCenterPage from './pages/DataCenterPage';
+import SystemOverviewPage from './pages/SystemOverviewPage';
+import ShadowPage from './pages/ShadowPage';
 import { ApiErrorAlert, Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useAgentChatStore } from './stores/agentChatStore';
@@ -62,9 +67,14 @@ const AppContent: React.FC = () => {
     <Routes>
       <Route element={<Shell />}>
         <Route path="/" element={<HomePage />} />
+        <Route path="/system-overview" element={<SystemOverviewPage />} />
+        <Route path="/data-center" element={<DataCenterPage />} />
+        <Route path="/ic-calculator" element={<ICAnnualizedPage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
+        <Route path="/reviews" element={<ReviewPage />} />
         <Route path="/backtest" element={<BacktestPage />} />
+        <Route path="/shadow" element={<ShadowPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

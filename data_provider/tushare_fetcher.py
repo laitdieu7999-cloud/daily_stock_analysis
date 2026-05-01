@@ -38,6 +38,7 @@ import os
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+_TUSHARE_MISSING_TOKEN_WARNED = False
 
 
 # ETF code prefixes by exchange
@@ -161,7 +162,12 @@ class TushareFetcher(BaseFetcher):
         config = get_config()
 
         if not config.tushare_token:
-            logger.warning("Tushare Token 未配置，此数据源不可用")
+            global _TUSHARE_MISSING_TOKEN_WARNED
+            if not _TUSHARE_MISSING_TOKEN_WARNED:
+                logger.warning("Tushare Token 未配置，此数据源不可用")
+                _TUSHARE_MISSING_TOKEN_WARNED = True
+            else:
+                logger.debug("Tushare Token 未配置，此数据源不可用")
             return
 
         try:

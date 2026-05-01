@@ -51,6 +51,7 @@ from data_provider.base import canonical_stock_code, normalize_stock_code
 from src.config import Config
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.services.name_to_code_resolver import resolve_name_to_code
+from src.services.sniper_points import refine_sniper_points_for_context
 from src.services.stock_code_utils import is_code_like
 from src.services.task_queue import (
     get_task_queue,
@@ -626,6 +627,26 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     change_pct = realtime_quote_raw.get('change_pct')
                 if change_pct is None:
                     change_pct = realtime_quote_raw.get('pct_chg')
+            raw_dashboard = raw_result.get("dashboard") if isinstance(raw_result, dict) else None
+            raw_battle = raw_dashboard.get("battle_plan") if isinstance(raw_dashboard, dict) else None
+            raw_sniper = raw_battle.get("sniper_points") if isinstance(raw_battle, dict) else None
+            db_sniper = {
+                "ideal_buy": getattr(record, "ideal_buy", None),
+                "secondary_buy": getattr(record, "secondary_buy", None),
+                "stop_loss": getattr(record, "stop_loss", None),
+                "take_profit": getattr(record, "take_profit", None),
+            }
+            raw_trend = raw_result.get("trend_analysis") if isinstance(raw_result, dict) else None
+            strategy_points = refine_sniper_points_for_context(
+                raw_sniper if isinstance(raw_sniper, dict) else db_sniper,
+                current_price=current_price or (raw_result.get("current_price") if isinstance(raw_result, dict) else None),
+                decision_type=(raw_result.get("decision_type") if isinstance(raw_result, dict) else None),
+                operation_advice=record.operation_advice,
+                trend_prediction=record.trend_prediction,
+                dashboard=raw_dashboard if isinstance(raw_dashboard, dict) else None,
+                trend_analysis=raw_trend if isinstance(raw_trend, dict) else None,
+                market_snapshot=raw_result.get("market_snapshot") if isinstance(raw_result, dict) else None,
+            )
 
             # Build report from DB record so completed tasks return real data
             report_dict = AnalysisReport(
@@ -648,10 +669,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     analysis_summary=record.analysis_summary,
                 ),
                 strategy=ReportStrategy(
-                    ideal_buy=str(getattr(record, 'ideal_buy', None)) if getattr(record, 'ideal_buy', None) is not None else None,
-                    secondary_buy=str(getattr(record, 'secondary_buy', None)) if getattr(record, 'secondary_buy', None) is not None else None,
-                    stop_loss=str(getattr(record, 'stop_loss', None)) if getattr(record, 'stop_loss', None) is not None else None,
-                    take_profit=str(getattr(record, 'take_profit', None)) if getattr(record, 'take_profit', None) is not None else None,
+                    ideal_buy=strategy_points.get("ideal_buy"),
+                    secondary_buy=strategy_points.get("secondary_buy"),
+                    stop_loss=strategy_points.get("stop_loss"),
+                    take_profit=strategy_points.get("take_profit"),
                 ),
             ).model_dump()
             return TaskStatus(
@@ -808,6 +829,8 @@ def _build_analysis_report(
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
+            market_snapshot=details_data.get("market_snapshot"),
+            data_sources=details_data.get("data_sources"),
         )
 
     return AnalysisReport(

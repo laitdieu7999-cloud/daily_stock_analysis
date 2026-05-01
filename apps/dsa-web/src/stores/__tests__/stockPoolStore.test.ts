@@ -202,6 +202,59 @@ describe('stockPoolStore', () => {
     }));
   });
 
+  it('accepts portfolio-origin analysis requests', async () => {
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-portfolio-1',
+      status: 'pending',
+    } as never);
+
+    await useStockPoolStore.getState().submitAnalysis({
+      stockCode: '159326',
+      stockName: '电网设备',
+      originalQuery: '159326',
+      selectionSource: 'portfolio',
+      forceRefresh: true,
+    });
+
+    expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: '159326',
+      stockName: '电网设备',
+      originalQuery: '159326',
+      selectionSource: 'portfolio',
+      forceRefresh: true,
+    }));
+  });
+
+  it('selects the latest history report matching a completed stock task', async () => {
+    const latestItem = {
+      ...historyItem,
+      id: 3,
+      queryId: 'q-3',
+      stockCode: '159326',
+      stockName: '电网设备',
+    };
+    const latestReport = {
+      ...historyReport,
+      meta: {
+        ...historyReport.meta,
+        id: 3,
+        queryId: 'q-3',
+        stockCode: '159326',
+        stockName: '电网设备',
+      },
+    };
+
+    useStockPoolStore.setState({
+      historyItems: [latestItem, historyItem],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(latestReport);
+
+    await useStockPoolStore.getState().selectLatestHistoryForStock('159326.SZ');
+
+    expect(historyApi.getDetail).toHaveBeenCalledWith(3);
+    expect(useStockPoolStore.getState().selectedReport?.meta.stockCode).toBe('159326');
+  });
+
   it('merges newly discovered history items during silent refresh', async () => {
     useStockPoolStore.setState({
       historyItems: [historyItem],

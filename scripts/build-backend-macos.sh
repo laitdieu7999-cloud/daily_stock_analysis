@@ -57,6 +57,12 @@ if [[ -d "${ROOT_DIR}/build/stock_analysis" ]]; then
   rm -rf "${ROOT_DIR}/build/stock_analysis"
 fi
 
+log "Creating stable static asset snapshot..."
+STATIC_SNAPSHOT="${ROOT_DIR}/build/static_snapshot"
+rm -rf "${STATIC_SNAPSHOT}"
+mkdir -p "$(dirname "${STATIC_SNAPSHOT}")"
+cp -R "${ROOT_DIR}/static" "${STATIC_SNAPSHOT}"
+
 hidden_imports=(
   "multipart"
   "multipart.multipart"
@@ -72,11 +78,18 @@ hidden_imports=(
   "api.v1.endpoints"
   "api.v1.endpoints.analysis"
   "api.v1.endpoints.history"
+  "api.v1.endpoints.system_config"
+  "api.v1.endpoints.data_center"
+  "api.v1.endpoints.backtest"
   "api.v1.endpoints.stocks"
   "api.v1.endpoints.health"
   "api.v1.schemas"
   "api.v1.schemas.analysis"
   "api.v1.schemas.history"
+  "api.v1.schemas.system_config"
+  "api.v1.schemas.system_overview"
+  "api.v1.schemas.data_center"
+  "api.v1.schemas.backtest"
   "api.v1.schemas.stocks"
   "api.v1.schemas.common"
   "api.middlewares"
@@ -85,6 +98,13 @@ hidden_imports=(
   "src.services.task_queue"
   "src.services.analysis_service"
   "src.services.history_service"
+  "src.services.system_overview_service"
+  "src.services.data_center_service"
+  "src.services.shadow_dashboard_service"
+  "src.services.market_data_warehouse_service"
+  "src.services.portfolio_daily_review_service"
+  "src.services.workstation_cleanup_service"
+  "src.services.ai_workload_routing_service"
   "uvicorn.logging"
   "uvicorn.loops"
   "uvicorn.loops.auto"
@@ -103,7 +123,7 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static" --collect-data litellm --collect-data tiktoken)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "${STATIC_SNAPSHOT}:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken --collect-data akshare --collect-data py_mini_racer --collect-binaries py_mini_racer)
 cmd+=("${hidden_import_args[@]}" "main.py")
 
 echo "Running: ${cmd[*]}"

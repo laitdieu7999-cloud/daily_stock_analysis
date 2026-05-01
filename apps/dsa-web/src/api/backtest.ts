@@ -1,11 +1,14 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
+  BacktestScanRequest,
+  BacktestScanResponse,
   BacktestRunRequest,
   BacktestRunResponse,
   BacktestResultsResponse,
   BacktestResultItem,
   PerformanceMetrics,
+  ShadowDashboardResponse,
 } from '../types/backtest';
 
 // ============ API ============
@@ -21,12 +24,31 @@ export const backtestApi = {
     if (params.evalWindowDays) requestData.eval_window_days = params.evalWindowDays;
     if (params.minAgeDays != null) requestData.min_age_days = params.minAgeDays;
     if (params.limit) requestData.limit = params.limit;
+    if (params.scoreThreshold != null) requestData.score_threshold = params.scoreThreshold;
+    if (params.topN != null) requestData.top_n = params.topN;
 
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/backtest/run',
       requestData,
     );
     return toCamelCase<BacktestRunResponse>(response.data);
+  },
+
+  scan: async (params: BacktestScanRequest = {}): Promise<BacktestScanResponse> => {
+    const requestData: Record<string, unknown> = {};
+    if (params.code) requestData.code = params.code;
+    if (params.minAgeDays != null) requestData.min_age_days = params.minAgeDays;
+    if (params.limit) requestData.limit = params.limit;
+    if (params.localDataOnly != null) requestData.local_data_only = params.localDataOnly;
+    if (params.evalWindowDaysOptions?.length) requestData.eval_window_days_options = params.evalWindowDaysOptions;
+    if (params.scoreThresholdOptions?.length) requestData.score_threshold_options = params.scoreThresholdOptions;
+    if (params.topNOptions?.length) requestData.top_n_options = params.topNOptions;
+
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/backtest/scan',
+      requestData,
+    );
+    return toCamelCase<BacktestScanResponse>(response.data);
   },
 
   /**
@@ -114,5 +136,13 @@ export const backtestApi = {
       }
       throw err;
     }
+  },
+
+  getShadowDashboard: async (params: { limit?: number } = {}): Promise<ShadowDashboardResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/backtest/shadow-dashboard',
+      { params: { limit: params.limit ?? 50 } },
+    );
+    return toCamelCase<ShadowDashboardResponse>(response.data);
   },
 };

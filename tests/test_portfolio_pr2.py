@@ -24,7 +24,7 @@ import src.auth as auth
 from api.app import create_app
 from src.config import Config
 from src.services.portfolio_import_service import PortfolioImportService
-from src.services.portfolio_risk_service import PortfolioRiskService
+from src.services.portfolio_risk_service import PROCESS_PRIMARY_SECTOR_CACHE, PortfolioRiskService
 from src.services.portfolio_service import PortfolioBusyError, PortfolioService
 from src.storage import DatabaseManager
 
@@ -73,6 +73,7 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.service = PortfolioService()
         self.import_service = PortfolioImportService(portfolio_service=self.service)
         self.risk_service = PortfolioRiskService(portfolio_service=self.service)
+        PROCESS_PRIMARY_SECTOR_CACHE.clear()
         self._board_fetch_patcher = patch.object(PortfolioRiskService, "_fetch_belong_boards", return_value=[])
         self._board_fetch_patcher.start()
         self.client = TestClient(create_app(static_dir=data_dir / "empty-static"))
@@ -494,6 +495,95 @@ class PortfolioPr2TestCase(unittest.TestCase):
         sectors = report["sector_concentration"]["top_sectors"]
         self.assertTrue(len(sectors) >= 1)
         self.assertEqual(sectors[0]["sector"], "白酒")
+
+    def test_sector_concentration_uses_local_etf_sector_fallback_without_remote_board_lookup(self) -> None:
+        account = self.service.create_account(name="ETF", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=10000.0,
+            currency="CNY",
+        )
+        self.service.record_trade(
+            account_id=aid,
+            symbol="159937",
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=1000,
+            price=1.0,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("159937", date(2026, 1, 1), 1.0)
+
+        with patch.object(PortfolioRiskService, "_fetch_belong_boards", side_effect=AssertionError("should not call")):
+            report = self.risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 1), cost_method="fifo")
+
+        sectors = report["sector_concentration"]["top_sectors"]
+        self.assertTrue(len(sectors) >= 1)
+        self.assertEqual(sectors[0]["sector"], "黄金")
+
+    def test_sector_concentration_skips_remote_board_lookup_for_bse_symbol(self) -> None:
+        account = self.service.create_account(name="BSE", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=10000.0,
+            currency="CNY",
+        )
+        self.service.record_trade(
+            account_id=aid,
+            symbol="838394",
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=100,
+            price=10.0,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("838394", date(2026, 1, 1), 10.0)
+
+        with patch.object(PortfolioRiskService, "_fetch_belong_boards", side_effect=AssertionError("should not call")):
+            report = self.risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 1), cost_method="fifo")
+
+        sectors = report["sector_concentration"]["top_sectors"]
+        self.assertTrue(len(sectors) >= 1)
+        self.assertEqual(sectors[0]["sector"], "UNCLASSIFIED")
+
+    def test_sector_concentration_reuses_process_cache_between_calls(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_cash_ledger(
+            account_id=aid,
+            event_date=date(2026, 1, 1),
+            direction="in",
+            amount=10000.0,
+            currency="CNY",
+        )
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=100,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("600519", date(2026, 1, 1), 100.0)
+
+        PROCESS_PRIMARY_SECTOR_CACHE.clear()
+        with patch.object(PortfolioRiskService, "_fetch_belong_boards", return_value=[{"name": "白酒", "type": "行业"}]) as mock_fetch:
+            first = self.risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 1), cost_method="fifo")
+            second = self.risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 1), cost_method="fifo")
+
+        self.assertEqual(first["sector_concentration"]["top_sectors"][0]["sector"], "白酒")
+        self.assertEqual(second["sector_concentration"]["top_sectors"][0]["sector"], "白酒")
+        self.assertEqual(mock_fetch.call_count, 1)
 
     def test_snapshot_does_not_trigger_online_fx_refresh(self) -> None:
         account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="CNY")

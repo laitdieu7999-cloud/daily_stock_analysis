@@ -4,6 +4,92 @@
 
 如果本文件与仓库中的脚本、工作流、代码现状不一致，以实际可执行内容为准，并在相关改动中顺手修正文档，避免规则继续漂移。
 
+## 0. AI Fast Start
+
+给 AI 编码代理的最短接手路径：
+
+- 主项目目录：`/Users/laitdieu/Documents/github/daily_stock_analysis`
+- 外层实验脚本目录：`/Users/laitdieu/Documents/github`
+- 主线系统入口：
+  - `main.py`
+  - `src/core/pipeline.py`
+  - `src/config.py`
+- 本地自定义扩展主线：
+  - `src/daily_push_pipeline.py`
+  - `src/market_data_fetcher.py`
+  - `src/agent/events.py`
+- 资产策略入口：
+  - `strategies/asset_direction_policy.yaml`
+  - `strategies/ic_basis_roll_framework.yaml`
+  - `strategies/gold_long_accumulation.yaml`
+  - `strategies/silver_dual_direction_framework.yaml`
+- 研究层统一入口：
+  - `src/models/metaphysical/`
+  - 兼容入口：`src/models/metaphysical_features.py`
+  - 新增研究逻辑：`time_law.py`、`gann.py`、`trend_law.py`、`strategy.py`
+
+当前边界请按下面理解，不要重新猜：
+
+- `daily_stock_analysis` 原本是股票分析主系统
+- 金银 / 白银 / 中证500 推送分析、事件监控、资产方向策略，是本地二次扩展
+- 星象 / 天干地支属于研究层，不默认视为生产主链路
+- 研究层已经统一收口到 `src/models/metaphysical/`
+
+当前已接到共享研究层的外层脚本：
+
+- `/Users/laitdieu/Documents/github/xgboost_tail_risk_v2.py`
+- `/Users/laitdieu/Documents/github/xgboost_feature_importance.py`
+- `/Users/laitdieu/Documents/github/resonance_backtest_v2.py`
+
+对这些脚本做研究层改动时：
+
+- 优先改 `src/models/metaphysical/`
+- 不要在外层脚本里重新复制 `sxtwl` / `ephem` 计算逻辑
+- 外层脚本应只保留取数、实验、回测、结果展示
+
+如果任务涉及“金银 / IC / 中证500 / 星象扩展”，建议优先阅读：
+
+- `docs/CUSTOM_EXTENSIONS.md`
+- `docs/ASSET_OPERATIONS.md`
+
+如果任务涉及“同步 GitHub 主仓最新代码”：
+
+- 先运行 `python scripts/check_upstream_updates.py`
+- 默认按上游**最新正式 tag/release** 检查，不跟踪 `upstream/main` 上仍处于 `Unreleased` 的提交
+- 默认只检查，不直接 `git pull`
+- 本地工作区有未提交改动时，优先人工合并，不做覆盖式同步
+
+AI 常见任务路由：
+
+- 改每日金银 / 白银 / 中证500 推送：
+  - 先看 `src/daily_push_pipeline.py`
+  - 再看 `main.py`、`src/config.py`
+- 改 Jin10 / 金银 / IC 数据获取：
+  - 先看 `src/market_data_fetcher.py`
+  - 再看 `src/agent/events.py`
+- 改事件监控：
+  - 先看 `src/agent/events.py`
+  - 再看 `tests/test_custom_extensions.py`
+- 改资产方向策略：
+  - 先看 `strategies/asset_direction_policy.yaml`
+  - 再看对应子策略 YAML
+- 改研究层星象 / 天干地支：
+  - 先看 `src/models/metaphysical/`
+  - 不要先改外层实验脚本
+- 改节气 / 火星事件 / 江恩 / 共振摘要：
+  - 先看 `src/models/metaphysical/time_law.py`
+  - 再看 `src/models/metaphysical/gann.py`
+  - 趋势法则看 `src/models/metaphysical/trend_law.py`
+  - 组合摘要看 `src/models/metaphysical/strategy.py`
+  - 保力加数值特征与触发器也已经在 `trend_law.py`
+- 改外层 XGBoost / 回测实验：
+  - 先确认共享研究层是否已能承载需求
+  - 再改 `/Users/laitdieu/Documents/github/xgboost_*.py`
+  - 再改 `/Users/laitdieu/Documents/github/resonance_backtest*.py`
+- 改研究层并表逻辑：
+  - 先看 `src/models/metaphysical/adapter.py`
+  - 回测兼容列看 `src/models/metaphysical/resonance.py`
+
 ## 1. 硬规则
 
 - 遵循现有目录边界：
@@ -36,6 +122,13 @@
 
 ```bash
 python scripts/check_ai_assets.py
+python scripts/check_upstream_updates.py
+```
+
+默认命令会按最新正式 release tag 检查；只有在明确需要评估未发版主线更新时，才额外使用：
+
+```bash
+python scripts/check_upstream_updates.py --compare-mode branch --remote upstream
 ```
 
 ## 3. 仓库速览

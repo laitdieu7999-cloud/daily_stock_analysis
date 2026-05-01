@@ -214,6 +214,44 @@ class TestFeishuSender(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(mock_post.call_count, 2)
 
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_retries_once_on_feishu_rate_limit(self, mock_post, mock_sleep):
+        mock_post.side_effect = [
+            _response(200, {"code": 11232, "msg": "frequency limited"}),
+            _response(200, {"code": 0}),
+        ]
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_rate_limit_retry_seconds=0.1,
+        )
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("hello")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_called_once_with(0.1)
+
+    @mock.patch("src.notification_sender.feishu_sender.time.sleep")
+    @mock.patch("src.notification_sender.feishu_sender.requests.post")
+    def test_send_skips_text_fallback_when_rate_limit_persists(self, mock_post, mock_sleep):
+        mock_post.side_effect = [
+            _response(200, {"code": 11232, "msg": "frequency limited"}),
+            _response(200, {"code": 11232, "msg": "frequency limited"}),
+        ]
+        cfg = _config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_rate_limit_retry_seconds=0.1,
+        )
+        sender = FeishuSender(cfg)
+
+        result = sender.send_to_feishu("hello")
+
+        self.assertFalse(result)
+        self.assertEqual(mock_post.call_count, 2)
+        mock_sleep.assert_called_once_with(0.1)
+
     @mock.patch("src.notification_sender.feishu_sender.requests.post")
     def test_send_with_keyword_that_leaves_too_little_chunk_budget_returns_false(self, mock_post):
         cfg = _config(

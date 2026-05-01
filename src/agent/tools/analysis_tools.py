@@ -73,6 +73,35 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         "rsi_24": round(result.rsi_24, 2),
         "rsi_status": result.rsi_status.value,
         "rsi_signal": result.rsi_signal,
+        "adx_14": round(result.adx_14, 2),
+        "plus_di_14": round(result.plus_di_14, 2),
+        "minus_di_14": round(result.minus_di_14, 2),
+        "adx_signal": result.adx_signal,
+        "mfi_14": round(result.mfi_14, 2),
+        "mfi_signal": result.mfi_signal,
+        "cci_20": round(result.cci_20, 2),
+        "cci_signal": result.cci_signal,
+        "roc_12": round(result.roc_12, 2),
+        "roc_signal": result.roc_signal,
+        "donchian_upper_20": round(result.donchian_upper_20, 4),
+        "donchian_lower_20": round(result.donchian_lower_20, 4),
+        "donchian_signal": result.donchian_signal,
+        "williams_r_14": round(result.williams_r_14, 2),
+        "williams_signal": result.williams_signal,
+        "stoch_rsi_14": round(result.stoch_rsi_14, 2),
+        "stoch_rsi_signal": result.stoch_rsi_signal,
+        "cmf_20": round(result.cmf_20, 4),
+        "cmf_signal": result.cmf_signal,
+        "vwap_20": round(result.vwap_20, 4),
+        "vwap_distance_pct": round(result.vwap_distance_pct, 2),
+        "vwap_signal": result.vwap_signal,
+        "indicator_consensus_score": round(result.indicator_consensus_score, 2),
+        "indicator_consensus_signal": result.indicator_consensus_signal,
+        "indicator_bullish_count": result.indicator_bullish_count,
+        "indicator_bearish_count": result.indicator_bearish_count,
+        "indicator_neutral_count": result.indicator_neutral_count,
+        "indicator_conflict_level": result.indicator_conflict_level,
+        "indicator_consensus_details": result.indicator_consensus_details,
         "buy_signal": result.buy_signal.value,
         "signal_score": result.signal_score,
         "signal_reasons": result.signal_reasons,
@@ -84,7 +113,9 @@ analyze_trend_tool = ToolDefinition(
     name="analyze_trend",
     description="Run comprehensive technical trend analysis on a stock. "
                 "Fetches historical data from database or data source. "
-                "Returns MA alignment, bias rates, MACD status, RSI levels, "
+                "Returns MA alignment, bias rates, MACD/RSI/BOLL/KDJ plus "
+                "ADX, MFI, CCI, ROC, Donchian, Williams %R, StochRSI, CMF, VWAP, "
+                "multi-indicator consensus summary, "
                 "volume analysis, support/resistance levels, and a buy/sell signal "
                 "with a score (0-100).",
     parameters=[

@@ -79,11 +79,13 @@ $hiddenImports = @(
   'api.v1.endpoints',
   'api.v1.endpoints.analysis',
   'api.v1.endpoints.history',
+  'api.v1.endpoints.backtest',
   'api.v1.endpoints.stocks',
   'api.v1.endpoints.health',
   'api.v1.schemas',
   'api.v1.schemas.analysis',
   'api.v1.schemas.history',
+  'api.v1.schemas.backtest',
   'api.v1.schemas.stocks',
   'api.v1.schemas.common',
   'api.middlewares',
@@ -92,6 +94,7 @@ $hiddenImports = @(
   'src.services.task_queue',
   'src.services.analysis_service',
   'src.services.history_service',
+  'src.services.shadow_dashboard_service',
   'uvicorn.logging',
   'uvicorn.loops',
   'uvicorn.loops.auto',
@@ -112,8 +115,10 @@ $pyInstallerArgs = @(
   '--noconfirm',
   '--noconsole',
   '--add-data', 'static;static',
+  '--add-data', 'strategies;strategies',
   '--collect-data', 'litellm',
-  '--collect-data', 'tiktoken'
+  '--collect-data', 'tiktoken',
+  '--collect-data', 'akshare'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'

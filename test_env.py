@@ -326,7 +326,13 @@ def test_notification():
     print_section("配置检查")
     if service.is_available():
         print(f"  ✓ 企业微信 Webhook 已配置")
-        webhook_preview = config.wechat_webhook_url[:50] + "..." if len(config.wechat_webhook_url) > 50 else config.wechat_webhook_url
+        webhook_url = (
+            getattr(config, "wechat_webhook_url", None)
+            or getattr(config, "wecom_webhook_url", None)
+            or getattr(config, "feishu_webhook_url", None)
+            or ""
+        )
+        webhook_preview = webhook_url[:50] + "..." if len(webhook_url) > 50 else webhook_url
         print(f"    URL: {webhook_preview}")
     else:
         print(f"  ✗ 企业微信 Webhook 未配置")

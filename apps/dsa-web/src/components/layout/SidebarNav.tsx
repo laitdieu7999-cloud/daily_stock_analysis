@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { BarChart3, BriefcaseBusiness, Home, LogOut, MessageSquareQuote, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, BriefcaseBusiness, Calculator, Home, LogOut, MessageSquareQuote, Radar } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
@@ -24,11 +24,12 @@ type NavItem = {
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { key: 'home', label: '首页', to: '/', icon: Home, exact: true },
-  { key: 'chat', label: '问股', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
+  { key: 'home', label: '今日', to: '/', icon: Home, exact: true },
+  { key: 'ic-calculator', label: 'IC', to: '/ic-calculator', icon: Calculator },
   { key: 'portfolio', label: '持仓', to: '/portfolio', icon: BriefcaseBusiness },
-  { key: 'backtest', label: '回测', to: '/backtest', icon: BarChart3 },
-  { key: 'settings', label: '设置', to: '/settings', icon: Settings2 },
+  { key: 'opportunity', label: '机会', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
+  { key: 'research', label: '研究', to: '/shadow', icon: Radar },
+  { key: 'system-overview', label: '系统', to: '/system-overview', icon: Activity },
 ];
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate }) => {
@@ -87,7 +88,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
                       'absolute right-3 border-2 border-background shadow-[0_0_10px_var(--nav-indicator-shadow)]',
                       collapsed ? 'right-2 top-2' : ''
                     )}
-                    aria-label="问股有新消息"
+                    aria-label="机会有新消息"
                   />
                 ) : null}
               </>

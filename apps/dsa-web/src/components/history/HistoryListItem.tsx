@@ -8,6 +8,7 @@ import { truncateStockName, isStockNameTruncated } from '../../utils/stockName';
 interface HistoryListItemProps {
   item: HistoryItem;
   isViewing: boolean; // Indicates if this report is currently being viewed in the right panel
+  isHolding?: boolean;
   isChecked: boolean; // Indicates if the checkbox is checked for bulk operations
   isDeleting: boolean;
   onToggleChecked: (recordId: number) => void;
@@ -37,6 +38,7 @@ const getOperationBadgeLabel = (advice?: string) => {
 export const HistoryListItem: React.FC<HistoryListItemProps> = ({
   item,
   isViewing,
+  isHolding = false,
   isChecked,
   isDeleting,
   onToggleChecked,
@@ -77,14 +79,25 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
-                <span className="truncate text-sm font-semibold text-foreground tracking-tight">
-                  <span className="group-hover/item:hidden">
-                    {truncateStockName(stockName)}
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="truncate text-sm font-semibold text-foreground tracking-tight">
+                    <span className="group-hover/item:hidden">
+                      {truncateStockName(stockName)}
+                    </span>
+                    <span className="hidden group-hover/item:inline">
+                      {stockName}
+                    </span>
                   </span>
-                  <span className="hidden group-hover/item:inline">
-                    {stockName}
-                  </span>
-                </span>
+                  {isHolding && (
+                    <Badge
+                      variant="info"
+                      size="sm"
+                      className="shrink-0 border border-primary/25 bg-primary/10 px-1.5 py-0 text-[10px] font-semibold leading-none text-primary shadow-none"
+                    >
+                      持仓
+                    </Badge>
+                  )}
+                </div>
               </div>
               {sentimentColor && (
                 <Badge

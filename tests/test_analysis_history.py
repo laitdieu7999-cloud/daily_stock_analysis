@@ -27,10 +27,12 @@ try:
     from fastapi.testclient import TestClient
     from api.app import create_app
     from api.v1.endpoints.history import get_history_detail
+    import api.v1.endpoints.history as history_endpoint
 except ModuleNotFoundError:
     TestClient = None
     create_app = None
     get_history_detail = None
+    history_endpoint = None
 
 from src.config import Config
 from src.storage import DatabaseManager, AnalysisHistory, BacktestResult
@@ -223,6 +225,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertIsInstance(detail.get("raw_result"), dict)
         self.assertIsNone(detail.get("model_used"))
 
+
     def test_history_detail_prefers_raw_sniper_strings(self) -> None:
         """History detail should display the original sniper point strings from raw_result."""
         result = self._build_result()
@@ -256,10 +259,48 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         service = HistoryService(self.db)
         detail = service.get_history_detail_by_id(record_id)
         self.assertIsNotNone(detail)
-        self.assertEqual(detail.get("ideal_buy"), "理想买入点：125.5元")
+        self.assertEqual(detail.get("ideal_buy"), "125.5元")
         self.assertEqual(detail.get("secondary_buy"), "120-121 元分批")
         self.assertEqual(detail.get("stop_loss"), "跌破 110 元止损")
-        self.assertEqual(detail.get("take_profit"), "目标位：150.0元")
+        self.assertEqual(detail.get("take_profit"), "150.0元")
+
+    def test_history_detail_cleans_messy_raw_sniper_payloads(self) -> None:
+        """History detail should not expose raw JSON/list/dict sniper payloads."""
+        result = self._build_result()
+        result.dashboard = {
+            "battle_plan": {
+                "sniper_points": {
+                    "ideal_buy": {"price": 125.5, "reason": "MA5附近"},
+                    "secondary_buy": '{"low": 120, "high": 121, "condition": "缩量回踩"}',
+                    "stop_loss": [{"debug": "无"}, {"price": 110, "basis": "跌破支撑"}],
+                    "take_profit": {"value": 150.0},
+                }
+            }
+        }
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_006_messy",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_006_messy").first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        service = HistoryService(self.db)
+        detail = service.get_history_detail_by_id(record_id)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.get("ideal_buy"), "125.50元（MA5附近）")
+        self.assertEqual(detail.get("secondary_buy"), "120.00-121.00元（缩量回踩）")
+        self.assertEqual(detail.get("stop_loss"), "110.00元（跌破支撑）")
+        self.assertEqual(detail.get("take_profit"), "150.00元")
 
     def test_history_detail_falls_back_to_numeric_sniper_columns(self) -> None:
         """History detail should still fall back to stored numeric sniper columns when raw strings are unavailable."""
@@ -289,10 +330,104 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         service = HistoryService(self.db)
         detail = service.get_history_detail_by_id(record_id)
         self.assertIsNotNone(detail)
-        self.assertEqual(detail.get("ideal_buy"), "125.5")
-        self.assertEqual(detail.get("secondary_buy"), "120.0")
-        self.assertEqual(detail.get("stop_loss"), "110.0")
-        self.assertEqual(detail.get("take_profit"), "150.0")
+        self.assertEqual(detail.get("ideal_buy"), "125.50元")
+        self.assertEqual(detail.get("secondary_buy"), "120.00元")
+        self.assertEqual(detail.get("stop_loss"), "110.00元")
+        self.assertEqual(detail.get("take_profit"), "150.00元")
+
+    def test_history_detail_builds_sniper_points_when_raw_values_are_non_actionable(self) -> None:
+        """Old history rows with raw '无' sniper values should still show useful display levels."""
+        result = self._build_result()
+        result.decision_type = "sell"
+        result.dashboard = {
+            "battle_plan": {
+                "sniper_points": {
+                    "ideal_buy": "无（空头趋势）",
+                    "secondary_buy": "无（空头趋势）",
+                    "stop_loss": "0.990元（跌破MA20）",
+                    "take_profit": "无",
+                }
+            }
+        }
+        context_snapshot = {
+            "enhanced_context": {
+                "today": {
+                    "close": 0.982,
+                    "high": 0.991,
+                    "low": 0.979,
+                    "ma5": 1.0064,
+                    "ma10": 1.0186,
+                    "ma20": 1.00855,
+                },
+                "realtime": {"price": 0.982},
+                "trend_analysis": {"boll_upper": 1.0618869625958158},
+            }
+        }
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_008",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=context_snapshot,
+            save_snapshot=True,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_008").first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        service = HistoryService(self.db)
+        detail = service.get_history_detail_by_id(record_id)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.get("ideal_buy"), "暂不接回；重新站回1.006元后再评估")
+        self.assertEqual(detail.get("secondary_buy"), "确认转强：站稳1.019元且止跌后再看")
+        self.assertEqual(detail.get("stop_loss"), "0.990元（跌破MA20）")
+        self.assertEqual(detail.get("take_profit"), "反抽出局线：1.006元附近（不是止盈目标）")
+
+    def test_history_detail_exposes_portfolio_position_from_context_snapshot(self) -> None:
+        """History detail should expose holding context for the report UI."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        query_id = "query_portfolio_position_001"
+        portfolio_position = {
+            "has_position": True,
+            "stock_code": "159326",
+            "quantity": 100,
+            "avg_cost": 1.2,
+            "last_price": 1.5,
+            "market_value": 150,
+            "unrealized_pnl": 30,
+            "unrealized_pnl_pct": 25,
+            "weight_pct": 7.5,
+        }
+        saved = self.db.save_analysis_history(
+            result=self._build_result(),
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot={
+                "enhanced_context": {
+                    "code": "159326",
+                    "portfolio_position": portfolio_position,
+                }
+            },
+            save_snapshot=True,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertEqual(report.details.portfolio_position, portfolio_position)
 
     def test_history_detail_uses_fundamental_snapshot_fallback_when_context_missing(self) -> None:
         """When context_snapshot is disabled, detail API should fallback to fundamental_snapshot."""
@@ -493,13 +628,124 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 self.fail("未找到保存的历史记录")
             record_id = row.id
 
-        markdown = HistoryService(self.db).get_markdown_report(str(record_id))
+        audit_path = Path(self._temp_dir.name) / "audit.jsonl"
+        with patch("src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH", audit_path):
+            markdown = HistoryService(self.db).get_markdown_report(str(record_id))
 
         self.assertIsNotNone(markdown)
         self.assertIn("Stock Analysis Report", markdown)
         self.assertIn("Core Conclusion", markdown)
         self.assertIn("Unnamed Stock (AAPL)", markdown)
         self.assertNotIn("核心结论", markdown)
+
+    def test_history_markdown_uses_bearish_execution_labels(self) -> None:
+        """History markdown should keep sell reports in defensive action language."""
+        result = AnalysisResult(
+            code="002580",
+            name="圣阳股份",
+            sentiment_score=32,
+            trend_prediction="强烈看空",
+            operation_advice="卖出",
+            analysis_summary="趋势转弱，先防守。",
+            decision_type="sell",
+            report_language="zh",
+            dashboard={
+                "core_conclusion": {"one_sentence": "趋势转弱，先防守。"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "30.34",
+                        "secondary_buy": "31.14",
+                        "stop_loss": "29.32",
+                        "take_profit": "30.34",
+                    }
+                },
+            },
+        )
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_bearish_markdown_001",
+            report_type="full",
+            news_content="news",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_bearish_markdown_001"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        audit_path = Path(self._temp_dir.name) / "audit.jsonl"
+        with patch("src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH", audit_path):
+            markdown = HistoryService(self.db).get_markdown_report(str(record_id))
+
+        self.assertIsNotNone(markdown)
+        self.assertIn("重新评估线", markdown)
+        self.assertIn("确认转强线", markdown)
+        self.assertIn("立即减仓区", markdown)
+        self.assertIn("反抽出局线", markdown)
+        self.assertNotIn("目标区", markdown)
+
+    def test_history_markdown_downgrades_far_sniper_levels(self) -> None:
+        """History markdown should not replay stale far-away action prices."""
+        result = AnalysisResult(
+            code="002580",
+            name="圣阳股份",
+            sentiment_score=68,
+            trend_prediction="看多",
+            operation_advice="买入",
+            analysis_summary="点位需重新校验。",
+            decision_type="buy",
+            current_price=27.48,
+            report_language="zh",
+            dashboard={
+                "core_conclusion": {"one_sentence": "点位需重新校验。"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "12.00",
+                        "secondary_buy": "13.00",
+                        "stop_loss": "10.00",
+                        "take_profit": "36.00",
+                    }
+                },
+            },
+        )
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_far_sniper_markdown_001",
+            report_type="full",
+            news_content="news",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_far_sniper_markdown_001"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        audit_path = Path(self._temp_dir.name) / "audit.jsonl"
+        with patch("src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH", audit_path):
+            markdown = HistoryService(self.db).get_markdown_report(str(record_id))
+
+        self.assertIsNotNone(markdown)
+        self.assertIn("暂不设买入区", markdown)
+        self.assertIn("暂不设加仓区", markdown)
+        self.assertIn("暂不设止损线", markdown)
+        self.assertIn("暂不设目标区", markdown)
+        self.assertNotIn("36.00元", markdown)
 
     def test_history_detail_localizes_english_summary_fields(self) -> None:
         """History detail should localize summary enums for English reports."""
@@ -589,7 +835,8 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         markdown = HistoryService(self.db).get_markdown_report(str(record_id))
 
         self.assertIsNotNone(markdown)
-        self.assertIn("✅Safe", markdown)
+        self.assertIn("Execution Plan", markdown)
+        self.assertIn("Veto Risk", markdown)
         self.assertNotIn("🚨Safe", markdown)
 
     def test_delete_analysis_history_records_also_cleans_backtests(self) -> None:
@@ -705,6 +952,76 @@ class HistoryItemSchemaNegativeSentimentTest(unittest.TestCase):
 
         summary = self.ReportSummary(sentiment_score=None)
         self.assertIsNone(summary.sentiment_score)
+
+
+class ArchiveInsightsApiTestCase(unittest.TestCase):
+    """长期归档洞察接口测试。"""
+
+    def setUp(self) -> None:
+        auth._auth_enabled = False
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._db_path = os.path.join(self._temp_dir.name, "test_archive_insights.db")
+        os.environ["DATABASE_PATH"] = self._db_path
+
+        Config._instance = None
+        DatabaseManager.reset_instance()
+        self.db = DatabaseManager.get_instance()
+
+    def tearDown(self) -> None:
+        DatabaseManager.reset_instance()
+        self._temp_dir.cleanup()
+
+    @patch("src.auth.is_auth_enabled", return_value=False)
+    def test_archive_insights_reads_latest_backtest_markdown_files(self, mock_auth) -> None:
+        if TestClient is None or create_app is None or history_endpoint is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        reports_root = Path(self._temp_dir.name) / "reports"
+        backtests_dir = reports_root / "backtests"
+        backtests_dir.mkdir(parents=True, exist_ok=True)
+        (backtests_dir / "latest_alpha.md").write_text("# Alpha Summary\n\nline1\nline2\n", encoding="utf-8")
+        (backtests_dir / "latest_beta.md").write_text("Beta fallback title\n\ncontent\n", encoding="utf-8")
+
+        static_dir = Path(self._temp_dir.name) / "empty-static"
+        static_dir.mkdir(exist_ok=True)
+
+        with patch.object(history_endpoint, "REPORTS_ROOT", reports_root), patch.object(
+            history_endpoint, "_iter_reports_roots", return_value=[reports_root]
+        ):
+            client = TestClient(create_app(static_dir=static_dir))
+            response = client.get("/api/v1/history/archive/insights")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("items", payload)
+        self.assertEqual(len(payload["items"]), 2)
+
+        keys = {item["key"] for item in payload["items"]}
+        self.assertEqual(keys, {"latest_alpha", "latest_beta"})
+
+        titles = {item["key"]: item["title"] for item in payload["items"]}
+        self.assertEqual(titles["latest_alpha"], "Alpha Summary")
+        self.assertEqual(titles["latest_beta"], "latest beta")
+
+    @patch("src.auth.is_auth_enabled", return_value=False)
+    def test_archive_insights_returns_empty_list_when_backtests_missing(self, mock_auth) -> None:
+        if TestClient is None or create_app is None or history_endpoint is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        reports_root = Path(self._temp_dir.name) / "reports"
+        reports_root.mkdir(parents=True, exist_ok=True)
+
+        static_dir = Path(self._temp_dir.name) / "empty-static"
+        static_dir.mkdir(exist_ok=True)
+
+        with patch.object(history_endpoint, "REPORTS_ROOT", reports_root), patch.object(
+            history_endpoint, "_iter_reports_roots", return_value=[reports_root]
+        ):
+            client = TestClient(create_app(static_dir=static_dir))
+            response = client.get("/api/v1/history/archive/insights")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"items": []})
 
 
 if __name__ == "__main__":

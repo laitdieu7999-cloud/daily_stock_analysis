@@ -7,6 +7,8 @@ import type {
   AnalysisReport,
   NewsIntelResponse,
   NewsIntelItem,
+  ArchiveInsightsResponse,
+  ArchiveInsightItem,
 } from '../types/analysis';
 
 // ============ API 接口 ============
@@ -76,6 +78,14 @@ export const historyApi = {
   getMarkdown: async (recordId: number): Promise<string> => {
     const response = await apiClient.get<{ content: string }>(`/api/v1/history/${recordId}/markdown`);
     return response.data.content;
+  },
+
+  getArchiveInsights: async (): Promise<ArchiveInsightsResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/history/archive/insights');
+    const data = toCamelCase<{ items: ArchiveInsightItem[] }>(response.data);
+    return {
+      items: (data.items || []).map(item => toCamelCase<ArchiveInsightItem>(item)),
+    };
   },
 
   /**

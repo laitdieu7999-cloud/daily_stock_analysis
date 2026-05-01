@@ -79,7 +79,7 @@ def test_sina_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fetche
         lambda *args, **kwargs: _DummyResponse(200, _make_sina_payload()),
     )
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG, logger="data_provider.akshare_fetcher"):
         quote = akshare_fetcher._get_stock_realtime_quote_sina("601006")
 
     assert quote is not None
@@ -119,7 +119,7 @@ def test_tencent_realtime_http_status_logs_endpoint(caplog, monkeypatch, akshare
         lambda *args, **kwargs: _DummyResponse(503, "service unavailable"),
     )
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG, logger="data_provider.akshare_fetcher"):
         quote = akshare_fetcher._get_stock_realtime_quote_tencent("601006")
 
     assert quote is None
@@ -131,7 +131,7 @@ def test_tencent_realtime_http_status_logs_endpoint(caplog, monkeypatch, akshare
     assert f"endpoint={TENCENT_REALTIME_ENDPOINT}" in caplog.text
 
 
-def test_tencent_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fetcher):
+def test_tencent_realtime_success_records_success_without_failure(monkeypatch, akshare_fetcher):
     breaker = _DummyCircuitBreaker()
     monkeypatch.setattr("data_provider.akshare_fetcher.get_realtime_circuit_breaker", lambda: breaker)
     monkeypatch.setattr(
@@ -139,12 +139,10 @@ def test_tencent_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fet
         lambda *args, **kwargs: _DummyResponse(200, _make_tencent_payload()),
     )
 
-    with caplog.at_level(logging.INFO):
-        quote = akshare_fetcher._get_stock_realtime_quote_tencent("601006")
+    quote = akshare_fetcher._get_stock_realtime_quote_tencent("601006")
 
     assert quote is not None
     assert quote.name == "大秦铁路"
     assert quote.price == 5.19
     assert breaker.successes == ["akshare_tencent"]
-    assert f"endpoint={TENCENT_REALTIME_ENDPOINT}" in caplog.text
-    assert "[实时行情-腾讯] 601006 大秦铁路:" in caplog.text
+    assert breaker.failures == []

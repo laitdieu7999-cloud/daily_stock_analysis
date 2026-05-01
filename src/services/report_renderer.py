@@ -24,6 +24,7 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
 )
+from src.services.sniper_points import clean_sniper_value, refine_sniper_points_for_context
 
 logger = logging.getLogger(__name__)
 
@@ -37,22 +38,31 @@ def _escape_md(text: str) -> str:
 
 def _clean_sniper_value(val: Any) -> str:
     """Format sniper point value for display (strip label prefixes)."""
-    if val is None:
-        return "N/A"
-    if isinstance(val, (int, float)):
-        return str(val)
-    s = str(val).strip() if val else ""
-    if not s or s == "N/A":
-        return s or "N/A"
-    prefixes = [
-        "理想买入点：", "次优买入点：", "止损位：", "目标位：",
-        "理想买入点:", "次优买入点:", "止损位:", "目标位:",
-        "Ideal Entry:", "Secondary Entry:", "Stop Loss:", "Target:",
-    ]
-    for prefix in prefixes:
-        if s.startswith(prefix):
-            return s[len(prefix):]
-    return s
+    return clean_sniper_value(val)
+
+
+def _refine_sniper_points(points: Any, result: AnalysisResult) -> Dict[str, str | None]:
+    """Return display-safe sniper points for templates."""
+    if not isinstance(points, dict) or not points:
+        return {}
+    dashboard = getattr(result, "dashboard", None)
+    trend_analysis = getattr(result, "trend_analysis", None)
+    return refine_sniper_points_for_context(
+        points if isinstance(points, dict) else {},
+        current_price=getattr(result, "current_price", None),
+        decision_type=getattr(result, "decision_type", None),
+        operation_advice=getattr(result, "operation_advice", None),
+        trend_prediction=getattr(result, "trend_prediction", None),
+        dashboard=dashboard if isinstance(dashboard, dict) else None,
+        trend_analysis=trend_analysis if isinstance(trend_analysis, dict) else None,
+        market_snapshot=getattr(result, "market_snapshot", None),
+        audit_context={
+            "source": "report_renderer",
+            "code": getattr(result, "code", None),
+            "name": getattr(result, "name", None),
+            "report_language": getattr(result, "report_language", None),
+        },
+    )
 
 
 def _resolve_templates_dir() -> Path:
@@ -150,6 +160,7 @@ def render(
         "report_language": report_language,
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
+        "refine_sniper": _refine_sniper_points,
         "failed_checks": failed_checks,
         "history_by_code": {},
         "localize_operation_advice": localize_operation_advice,

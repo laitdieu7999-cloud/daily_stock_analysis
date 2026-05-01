@@ -10,6 +10,9 @@
 """
 
 import logging
+from datetime import datetime
+import os
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Body
@@ -28,6 +31,8 @@ from api.v1.schemas.history import (
     ReportStrategy,
     ReportDetails,
     MarkdownReportResponse,
+    ArchiveInsightItem,
+    ArchiveInsightsResponse,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
@@ -48,6 +53,110 @@ from src.utils.data_processing import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+REPORTS_ROOT = Path(__file__).resolve().parents[3] / "reports"
+ARCHIVE_MAX_ITEMS = 12
+ARCHIVE_MAX_CONTENT_CHARS = 24000
+
+
+def _extract_markdown_title(content: str, fallback: str) -> str:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+    return fallback
+
+
+def _iter_reports_roots(preferred_root: Path | None = None) -> list[Path]:
+    candidates: list[Path] = []
+    env_reports_root = Path(os.environ["REPORTS_ROOT"]).expanduser() if "REPORTS_ROOT" in os.environ else None
+    if preferred_root is not None:
+        candidates.append(preferred_root)
+    if env_reports_root is not None:
+        candidates.append(env_reports_root)
+    candidates.extend(
+        [
+            REPORTS_ROOT,
+            Path.cwd() / "reports",
+            Path.home() / "Library" / "Application Support" / "Daily Stock Analysis" / "reports",
+            Path.home() / "Documents" / "github" / "daily_stock_analysis" / "reports",
+        ]
+    )
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.expanduser().resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _build_archive_insight_items(reports_root: Path | None = None) -> list[ArchiveInsightItem]:
+    selected_root = None
+    for candidate_root in _iter_reports_roots(reports_root):
+        candidate_backtests = candidate_root / "backtests"
+        if candidate_backtests.exists() and any(candidate_backtests.glob("latest_*.md")):
+            selected_root = candidate_root
+            break
+
+    reports_root = selected_root or reports_root or REPORTS_ROOT
+    backtests_dir = reports_root / "backtests"
+    if not backtests_dir.exists():
+        return []
+
+    items: list[ArchiveInsightItem] = []
+    seen_paths: set[str] = set()
+    candidates = sorted(
+        backtests_dir.glob("latest_*.md"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+    for path in candidates:
+        if len(items) >= ARCHIVE_MAX_ITEMS:
+            break
+        resolved = str(path.resolve())
+        if resolved in seen_paths or not path.is_file():
+            continue
+        seen_paths.add(resolved)
+
+        try:
+            raw_content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("读取长期归档洞察失败 %s: %s", path, exc)
+            continue
+
+        content = raw_content.strip()
+        if not content:
+            continue
+
+        if len(content) > ARCHIVE_MAX_CONTENT_CHARS:
+            content = content[:ARCHIVE_MAX_CONTENT_CHARS].rstrip() + "\n\n...（已截断）"
+
+        fallback_title = path.stem.replace("_", " ")
+        updated_at = None
+        try:
+            updated_at = path.stat().st_mtime
+        except OSError:
+            updated_at = None
+
+        items.append(
+            ArchiveInsightItem(
+                key=path.stem,
+                title=_extract_markdown_title(content, fallback_title),
+                path=str(path),
+                updated_at=(
+                    None
+                    if updated_at is None
+                    else datetime.fromtimestamp(updated_at).isoformat(timespec="seconds")
+                ),
+                content=content,
+            )
+        )
+
+    return items
 
 
 @router.get(
@@ -170,6 +279,30 @@ def delete_history_records(
             detail={
                 "error": "internal_error",
                 "message": f"删除历史记录失败: {str(e)}"
+            }
+        )
+
+
+@router.get(
+    "/archive/insights",
+    response_model=ArchiveInsightsResponse,
+    responses={
+        200: {"description": "长期归档洞察列表"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取长期归档洞察",
+    description="读取本地 reports/backtests 下的 latest_*.md 归档摘要，用于复盘看板展示",
+)
+def get_archive_insights() -> ArchiveInsightsResponse:
+    try:
+        return ArchiveInsightsResponse(items=_build_archive_insight_items())
+    except Exception as e:
+        logger.error(f"读取长期归档洞察失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": f"读取长期归档洞察失败: {str(e)}"
             }
         )
 
@@ -305,23 +438,30 @@ def get_history_detail(
             query_id=result.get("query_id", ""),
             code=result.get("stock_code", ""),
         )
+        context_snapshot = result.get("context_snapshot")
         extracted_fundamental = extract_fundamental_detail_fields(
-            context_snapshot=result.get("context_snapshot"),
+            context_snapshot=context_snapshot,
             fallback_fundamental_payload=fallback_fundamental,
         )
         extracted_boards = extract_board_detail_fields(
-            context_snapshot=result.get("context_snapshot"),
+            context_snapshot=context_snapshot,
             fallback_fundamental_payload=fallback_fundamental,
         )
 
         details = ReportDetails(
             news_content=result.get("news_content"),
             raw_result=result.get("raw_result"),
-            context_snapshot=result.get("context_snapshot"),
+            context_snapshot=context_snapshot,
             financial_report=extracted_fundamental.get("financial_report"),
             dividend_metrics=extracted_fundamental.get("dividend_metrics"),
             belong_boards=extracted_boards.get("belong_boards"),
             sector_rankings=extracted_boards.get("sector_rankings"),
+            portfolio_position=(
+                (context_snapshot.get("enhanced_context") or {}).get("portfolio_position")
+                if isinstance(context_snapshot, dict)
+                and isinstance(context_snapshot.get("enhanced_context"), dict)
+                else None
+            ),
         )
         
         return AnalysisReport(

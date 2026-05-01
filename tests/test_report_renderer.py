@@ -9,7 +9,9 @@ Tests for Jinja2 report rendering and fallback behavior.
 
 import sys
 import unittest
-from unittest.mock import MagicMock
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock, patch
 
 try:
     import litellm  # noqa: F401
@@ -23,12 +25,14 @@ from src.services.report_renderer import render
 def _make_result(
     code: str = "600519",
     name: str = "贵州茅台",
+    trend_prediction: str = "看多",
     sentiment_score: int = 72,
     operation_advice: str = "持有",
     analysis_summary: str = "稳健",
     decision_type: str = "hold",
     dashboard: dict = None,
     report_language: str = "zh",
+    current_price: float | None = None,
 ) -> AnalysisResult:
     if dashboard is None:
         dashboard = {
@@ -39,13 +43,14 @@ def _make_result(
     return AnalysisResult(
         code=code,
         name=name,
-        trend_prediction="看多",
+        trend_prediction=trend_prediction,
         sentiment_score=sentiment_score,
         operation_advice=operation_advice,
         analysis_summary=analysis_summary,
         decision_type=decision_type,
         dashboard=dashboard,
         report_language=report_language,
+        current_price=current_price,
     )
 
 
@@ -64,7 +69,11 @@ class TestReportRenderer(unittest.TestCase):
     def test_render_markdown_full(self) -> None:
         """Markdown platform renders full report."""
         r = _make_result()
-        out = render("markdown", [r], summary_only=False)
+        with TemporaryDirectory() as tmpdir, patch(
+            "src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH",
+            Path(tmpdir) / "audit.jsonl",
+        ):
+            out = render("markdown", [r], summary_only=False)
         self.assertIsNotNone(out)
         self.assertIn("核心结论", out)
         self.assertIn("作战计划", out)
@@ -123,11 +132,118 @@ class TestReportRenderer(unittest.TestCase):
             "source": "polygon",
         }
 
-        out = render("markdown", [r], summary_only=False)
+        with TemporaryDirectory() as tmpdir, patch(
+            "src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH",
+            Path(tmpdir) / "audit.jsonl",
+        ):
+            out = render("markdown", [r], summary_only=False)
 
         self.assertIsNotNone(out)
         self.assertIn("Market Snapshot", out)
         self.assertIn("Volume Ratio", out)
+
+    def test_render_markdown_cleans_messy_sniper_payloads(self) -> None:
+        """Markdown reports should not leak raw dict/list sniper payloads."""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "等待回踩"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": {"price": 112, "reason": "MA5附近"},
+                        "secondary_buy": '{"low": 110, "high": 111, "condition": "缩量回踩"}',
+                        "stop_loss": ["108", {"debug": "ignore"}],
+                        "take_profit": {"value": 120},
+                    }
+                },
+            }
+        )
+
+        with TemporaryDirectory() as tmpdir, patch(
+            "src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH",
+            Path(tmpdir) / "audit.jsonl",
+        ):
+            out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("| 🎯 买入区 | 🔵 加仓区 | 🛑 止损线 | 🎊 目标区 |", out)
+        self.assertIn("112.00元（MA5附近）", out)
+        self.assertIn("110.00-111.00元（缩量回踩）", out)
+        self.assertIn("108.00元", out)
+        self.assertNotIn("{'price'", out)
+        self.assertNotIn('"low"', out)
+
+    def test_render_markdown_uses_bearish_action_labels(self) -> None:
+        """Bearish reports should render action labels instead of profit-target language."""
+        r = _make_result(
+            trend_prediction="强烈看空",
+            operation_advice="卖出",
+            decision_type="sell",
+            dashboard={
+                "core_conclusion": {"one_sentence": "趋势转弱，先防守。"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "30.34",
+                        "secondary_buy": "31.14",
+                        "stop_loss": "29.32",
+                        "take_profit": "30.34",
+                    }
+                },
+            },
+        )
+
+        with TemporaryDirectory() as tmpdir, patch(
+            "src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH",
+            Path(tmpdir) / "audit.jsonl",
+        ):
+            out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("重新评估线", out)
+        self.assertIn("确认转强线", out)
+        self.assertIn("立即减仓区", out)
+        self.assertIn("反抽出局线", out)
+        self.assertNotIn("目标区", out)
+
+        wechat_out = render("wechat", [r])
+        self.assertIsNotNone(wechat_out)
+        self.assertIn("确认转强线", wechat_out)
+        self.assertIn("反抽出局线", wechat_out)
+        self.assertNotIn("目标区", wechat_out)
+
+    def test_render_markdown_downgrades_far_sniper_levels(self) -> None:
+        """Templates should not display stale/hallucinated prices far from current price."""
+        r = _make_result(
+            current_price=27.48,
+            operation_advice="买入",
+            decision_type="buy",
+            dashboard={
+                "core_conclusion": {"one_sentence": "点位需重新校验。"},
+                "intelligence": {"risk_alerts": []},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "12.00",
+                        "secondary_buy": "13.00",
+                        "stop_loss": "10.00",
+                        "take_profit": "36.00",
+                    }
+                },
+            },
+        )
+
+        with TemporaryDirectory() as tmpdir, patch(
+            "src.services.sniper_points.SNIPER_POINT_DOWNGRADE_AUDIT_PATH",
+            Path(tmpdir) / "audit.jsonl",
+        ):
+            out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("暂不设买入区", out)
+        self.assertIn("暂不设加仓区", out)
+        self.assertIn("暂不设止损线", out)
+        self.assertIn("暂不设目标区", out)
+        self.assertNotIn("36.00元", out)
 
     def test_render_unknown_platform_returns_none(self) -> None:
         """Unknown platform returns None (caller fallback)."""

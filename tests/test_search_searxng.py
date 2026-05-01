@@ -15,7 +15,8 @@ if "newspaper" not in sys.modules:
     mock_np.Config = MagicMock()
     sys.modules["newspaper"] = mock_np
 
-from src.search_service import SearchService, SearXNGSearchProvider
+import src.search_service as search_service_module
+from src.search_service import SearchResponse, SearchService, SearXNGSearchProvider
 
 
 class TestSearXNGSearchProvider(unittest.TestCase):
@@ -26,6 +27,8 @@ class TestSearXNGSearchProvider(unittest.TestCase):
         # Clear penalized-instance state if the provider implements it.
         if hasattr(SearXNGSearchProvider, "_penalized_instances"):
             SearXNGSearchProvider._penalized_instances.clear()
+        search_service_module._SEARXNG_MODE_INFO_LOGGED = False
+        search_service_module._NEWS_WINDOW_INFO_LOGGED = False
 
     def _create_provider(
         self,
@@ -424,6 +427,63 @@ class TestSearXNGSearchProvider(unittest.TestCase):
         self.assertEqual(third, ["https://public-1.example"])
         self.assertEqual(mock_get.call_count, 2)
 
+    @patch("src.search_service.time.time")
+    @patch("src.search_service.requests.get")
+    def test_public_mode_rate_limit_backoff_skips_repeated_searches(self, mock_get, mock_time):
+        now = [1000.0]
+        mock_time.side_effect = lambda: now[0]  # noqa: E731
+        mock_get.side_effect = [
+            self._response(json_payload=self._public_feed(["https://public-1.example/"])),
+            self._response(
+                status_code=429,
+                text="Too Many Requests",
+                headers={"content-type": "text/plain"},
+            ),
+        ]
+
+        provider = self._create_provider(use_public_instances=True)
+        first = provider.search("first", max_results=5)
+        second = provider.search("second", max_results=5)
+
+        self.assertFalse(first.success)
+        self.assertFalse(second.success)
+        self.assertIn("限流退避", second.error_message or "")
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("src.search_service.time.time")
+    @patch("src.search_service.requests.get")
+    def test_public_mode_stops_rotating_remaining_instances_once_rate_limit_backoff_is_armed(
+        self,
+        mock_get,
+        mock_time,
+    ):
+        now = [1000.0]
+        mock_time.side_effect = lambda: now[0]  # noqa: E731
+        mock_get.side_effect = [
+            self._response(
+                json_payload=self._public_feed(
+                    [
+                        "https://public-1.example/",
+                        "https://public-2.example/",
+                        "https://public-3.example/",
+                    ]
+                )
+            ),
+            self._response(
+                status_code=429,
+                text="Too Many Requests",
+                headers={"content-type": "text/plain"},
+            ),
+        ]
+
+        provider = self._create_provider(use_public_instances=True)
+        first = provider.search("first", max_results=5)
+
+        self.assertFalse(first.success)
+        # Feed fetch + exactly one public instance attempt; remaining
+        # public instances should be skipped once backoff is armed.
+        self.assertEqual(mock_get.call_count, 2)
+
     @patch.object(SearXNGSearchProvider, "_get_public_instances")
     @patch("src.search_service._get_with_retry")
     def test_self_hosted_mode_does_not_fetch_public_instances(self, mock_get, mock_public_instances):
@@ -440,6 +500,56 @@ class TestSearXNGSearchProvider(unittest.TestCase):
 
         self.assertTrue(service.is_available)
         self.assertTrue(any(provider.name == "SearXNG" for provider in service._providers))
+
+    @patch("src.search_service.time.sleep")
+    def test_search_service_short_circuits_remaining_dimensions_during_public_rate_limit_backoff(
+        self,
+        _mock_sleep,
+    ):
+        provider = MagicMock()
+        provider.name = "SearXNG"
+        provider.is_available = True
+        provider.search.return_value = SearchResponse(
+            query="dummy",
+            results=[],
+            provider="SearXNG",
+            success=False,
+            error_message="公共 SearXNG 实例限流退避中，稍后重试",
+        )
+
+        service = SearchService(searxng_public_instances_enabled=False)
+        service._providers = [provider]
+
+        result = service.search_comprehensive_intel("510500", "南方中证500ETF", max_searches=5)
+
+        self.assertEqual(provider.search.call_count, 1)
+        self.assertEqual(list(result.keys()), ["latest_news"])
+
+    def test_search_service_init_logs_searxng_mode_and_news_window_only_once(self):
+        with self.assertLogs("src.search_service", level="INFO") as captured:
+            SearchService(
+                searxng_base_urls=["https://searx.example.org"],
+                news_max_age_days=3,
+                news_strategy_profile="short",
+            )
+
+        first_log_text = "\n".join(captured.output)
+        self.assertIn("已配置 SearXNG 搜索，共 1 个自建实例", first_log_text)
+        self.assertIn("新闻时效策略已启用", first_log_text)
+
+        with patch.object(search_service_module.logger, "info") as info_mock:
+            SearchService(
+                searxng_base_urls=["https://searx.example.org"],
+                news_max_age_days=3,
+                news_strategy_profile="short",
+            )
+
+        template_messages = [call.args[0] for call in info_mock.call_args_list]
+        self.assertNotIn("已配置 SearXNG 搜索，共 %s 个自建实例", template_messages)
+        self.assertNotIn(
+            "新闻时效策略已启用: profile=%s, profile_days=%s, NEWS_MAX_AGE_DAYS=%s, effective_window=%s",
+            template_messages,
+        )
 
 
 if __name__ == "__main__":

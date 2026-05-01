@@ -5,9 +5,11 @@ import { useTaskStream } from './useTaskStream';
 type UseDashboardLifecycleOptions = {
   loadInitialHistory: () => Promise<void>;
   refreshHistory: (silent?: boolean) => Promise<void>;
+  refreshHoldingCodes?: () => Promise<void>;
   syncTaskCreated: (task: TaskInfo) => void;
   syncTaskUpdated: (task: TaskInfo) => void;
   syncTaskFailed: (task: TaskInfo) => void;
+  selectLatestHistoryForStock?: (stockCode: string) => Promise<void>;
   removeTask: (taskId: string) => void;
   enabled?: boolean;
 };
@@ -15,9 +17,11 @@ type UseDashboardLifecycleOptions = {
 export function useDashboardLifecycle({
   loadInitialHistory,
   refreshHistory,
+  refreshHoldingCodes,
   syncTaskCreated,
   syncTaskUpdated,
   syncTaskFailed,
+  selectLatestHistoryForStock,
   removeTask,
   enabled = true,
 }: UseDashboardLifecycleOptions): void {
@@ -38,10 +42,11 @@ export function useDashboardLifecycle({
 
     const intervalId = window.setInterval(() => {
       void refreshHistory(true);
+      void refreshHoldingCodes?.();
     }, 30_000);
 
     return () => window.clearInterval(intervalId);
-  }, [enabled, refreshHistory]);
+  }, [enabled, refreshHistory, refreshHoldingCodes]);
 
   useEffect(() => {
     if (!enabled) {
@@ -51,12 +56,13 @@ export function useDashboardLifecycle({
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         void refreshHistory(true);
+        void refreshHoldingCodes?.();
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [enabled, refreshHistory]);
+  }, [enabled, refreshHistory, refreshHoldingCodes]);
 
   useEffect(() => {
     return () => {
@@ -74,13 +80,24 @@ export function useDashboardLifecycle({
     removalTimeoutsRef.current.push(timeoutId);
   };
 
+  const scheduleRefreshRetry = (task: TaskInfo, delayMs: number) => {
+    const timeoutId = window.setTimeout(() => {
+      void refreshHistory(true).then(() => selectLatestHistoryForStock?.(task.stockCode));
+      removalTimeoutsRef.current = removalTimeoutsRef.current.filter((item) => item !== timeoutId);
+    }, delayMs);
+
+    removalTimeoutsRef.current.push(timeoutId);
+  };
+
   useTaskStream({
     onTaskCreated: syncTaskCreated,
     onTaskStarted: syncTaskUpdated,
     onTaskProgress: syncTaskUpdated,
     onTaskCompleted: (task) => {
       syncTaskUpdated(task);
-      void refreshHistory(true);
+      void refreshHistory(true).then(() => selectLatestHistoryForStock?.(task.stockCode));
+      void refreshHoldingCodes?.();
+      scheduleRefreshRetry(task, 1_200);
       scheduleTaskRemoval(task.taskId, 2_000);
     },
     onTaskFailed: (task) => {

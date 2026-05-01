@@ -5,11 +5,12 @@ import { getParsedApiError } from '../api/error';
 import { historyApi } from '../api/history';
 import type { AnalysisReport, HistoryItem, HistoryListResponse, TaskInfo } from '../types/analysis';
 import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
+import { normalizeStockCode, removeMarketSuffix } from '../utils/normalizeQuery';
 import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } from '../utils/validation';
 
 const PAGE_SIZE = 20;
 
-type SelectionSource = 'manual' | 'autocomplete' | 'import' | 'image';
+type SelectionSource = 'manual' | 'autocomplete' | 'import' | 'image' | 'portfolio';
 
 type FetchHistoryOptions = {
   autoSelectFirst?: boolean;
@@ -59,6 +60,7 @@ export interface StockPoolState {
   refreshHistory: (silent?: boolean) => Promise<void>;
   loadMoreHistory: () => Promise<void>;
   selectHistoryItem: (recordId: number) => Promise<void>;
+  selectLatestHistoryForStock: (stockCode: string) => Promise<void>;
   toggleHistorySelection: (recordId: number) => void;
   toggleSelectAllVisible: () => void;
   deleteSelectedHistory: () => Promise<void>;
@@ -99,6 +101,13 @@ function buildHistoryParams(page: number) {
     page,
     limit: PAGE_SIZE,
   };
+}
+
+function toHistoryStockKey(code?: string | null): string {
+  if (!code) {
+    return '';
+  }
+  return removeMarketSuffix(normalizeStockCode(code));
 }
 
 async function fetchHistory(
@@ -241,6 +250,22 @@ export const useStockPoolStore = create<StockPoolState>((set, get) => ({
         isLoadingReport: false,
       });
     }
+  },
+
+  selectLatestHistoryForStock: async (stockCode) => {
+    const targetKey = toHistoryStockKey(stockCode);
+    if (!targetKey) {
+      return;
+    }
+
+    const item = get().historyItems.find((historyItem) => (
+      toHistoryStockKey(historyItem.stockCode) === targetKey
+    ));
+    if (!item) {
+      return;
+    }
+
+    await get().selectHistoryItem(item.id);
   },
 
   toggleHistorySelection: (recordId) => {

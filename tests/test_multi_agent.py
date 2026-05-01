@@ -11,10 +11,13 @@ Covers:
 - PortfolioAgent.post_process: JSON parsing via try_parse_json
 """
 
+import asyncio
 import json
 import sys
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -293,11 +296,11 @@ class TestStrategyRouter(unittest.TestCase):
     )
     @patch("src.config.get_config", return_value=SimpleNamespace(agent_skills=[]))
     def test_manual_mode_falls_back_to_defaults_when_no_skills_configured(self, _mock_config, _mock_available, _mock):
-        from src.agent.strategies.router import StrategyRouter, _DEFAULT_STRATEGIES
+        from src.agent.strategies.router import StrategyRouter
         router = StrategyRouter()
         ctx = AgentContext()
         result = router.select_strategies(ctx)
-        self.assertEqual(result, list(_DEFAULT_STRATEGIES[:3]))
+        self.assertEqual(result, ["bull_trend", "shrink_pullback"])
 
     def test_detect_regime_bullish(self):
         from src.agent.strategies.router import StrategyRouter
@@ -1176,6 +1179,48 @@ class TestEventMonitorAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(triggered), 1)
         async_cb.assert_awaited_once()
 
+    async def test_check_all_skips_cn_intraday_rule_after_close(self):
+        """Holding/watchlist intraday rules should stay silent after A-share close."""
+        from src.agent.events import EventMonitor, PriceAlert
+
+        monitor = EventMonitor()
+        rule = PriceAlert(
+            stock_code="600519",
+            direction="below",
+            price=1400.0,
+            metadata={"market_session": "cn_intraday"},
+        )
+        monitor.add_alert(rule)
+
+        quote = SimpleNamespace(price=1390.0)
+        with patch("src.agent.events._is_cn_intraday_session", return_value=False), \
+             patch("src.agent.events.asyncio.to_thread", new=AsyncMock(return_value=quote)) as to_thread:
+            triggered = await monitor.check_all()
+
+        self.assertEqual(triggered, [])
+        to_thread.assert_not_awaited()
+
+    async def test_check_all_keeps_cn_intraday_rule_during_session(self):
+        """The same rule must still trigger inside A-share trading hours."""
+        from src.agent.events import EventMonitor, PriceAlert
+
+        monitor = EventMonitor()
+        rule = PriceAlert(
+            stock_code="600519",
+            direction="below",
+            price=1400.0,
+            metadata={"market_session": "cn_intraday"},
+        )
+        monitor.add_alert(rule)
+
+        quote = SimpleNamespace(price=1390.0)
+        with patch("src.agent.events._is_cn_intraday_session", return_value=True), \
+             patch("src.agent.events.asyncio.to_thread", new=AsyncMock(return_value=quote)) as to_thread:
+            triggered = await monitor.check_all()
+
+        self.assertEqual(len(triggered), 1)
+        to_thread.assert_awaited_once()
+
 
 class TestEventMonitorConfigIntegration(unittest.TestCase):
     """Test config-driven EventMonitor construction."""
@@ -1186,6 +1231,7 @@ class TestEventMonitorConfigIntegration(unittest.TestCase):
         config = SimpleNamespace(
             agent_event_monitor_enabled=True,
             agent_event_alert_rules_json='[{"stock_code":"600519","alert_type":"price_cross","direction":"above","price":1800}]',
+            agent_event_auto_portfolio_rules_enabled=False,
         )
 
         with patch("src.notification.NotificationService", return_value=MagicMock()):
@@ -1201,10 +1247,68 @@ class TestEventMonitorConfigIntegration(unittest.TestCase):
         config = SimpleNamespace(
             agent_event_monitor_enabled=True,
             agent_event_alert_rules_json='[invalid',
+            agent_event_auto_portfolio_rules_enabled=False,
         )
 
         monitor = build_event_monitor_from_config(config=config)
         self.assertIsNone(monitor)
+
+    def test_build_event_monitor_uses_auto_portfolio_rules_when_manual_rules_empty(self):
+        from src.agent.events import build_event_monitor_from_config
+
+        config = SimpleNamespace(
+            agent_event_monitor_enabled=True,
+            agent_event_alert_rules_json='',
+            agent_event_auto_portfolio_rules_enabled=True,
+            agent_event_auto_portfolio_max_positions=16,
+        )
+
+        auto_rules = [
+            {
+                "stock_code": "600519",
+                "alert_type": "price_cross",
+                "direction": "below",
+                "price": 1400.0,
+                "metadata": {"kind": "holding_stop_loss", "symbol_name": "贵州茅台"},
+            }
+        ]
+
+        with patch("src.agent.events._build_portfolio_intraday_alert_rules", return_value=auto_rules), \
+             patch("src.notification.NotificationService", return_value=MagicMock()):
+            monitor = build_event_monitor_from_config(config=config)
+
+        self.assertIsNotNone(monitor)
+        self.assertEqual(len(monitor.rules), 1)
+        self.assertEqual(monitor.rules[0].stock_code, "600519")
+        self.assertEqual(monitor.rules[0].metadata.get("kind"), "holding_stop_loss")
+
+    def test_build_event_monitor_keeps_auto_rules_when_manual_json_invalid(self):
+        from src.agent.events import build_event_monitor_from_config
+
+        config = SimpleNamespace(
+            agent_event_monitor_enabled=True,
+            agent_event_alert_rules_json='[invalid',
+            agent_event_auto_portfolio_rules_enabled=True,
+            agent_event_auto_portfolio_max_positions=16,
+        )
+
+        auto_rules = [
+            {
+                "stock_code": "601888",
+                "alert_type": "price_cross",
+                "direction": "above",
+                "price": 66.11,
+                "metadata": {"kind": "holding_trim_level", "symbol_name": "中国中免"},
+            }
+        ]
+
+        with patch("src.agent.events._build_portfolio_intraday_alert_rules", return_value=auto_rules), \
+             patch("src.notification.NotificationService", return_value=MagicMock()):
+            monitor = build_event_monitor_from_config(config=config)
+
+        self.assertIsNotNone(monitor)
+        self.assertEqual(len(monitor.rules), 1)
+        self.assertEqual(monitor.rules[0].stock_code, "601888")
 
     def test_build_event_monitor_skips_invalid_rule_entries(self):
         from src.agent.events import build_event_monitor_from_config
@@ -1215,6 +1319,7 @@ class TestEventMonitorConfigIntegration(unittest.TestCase):
                 '[{"stock_code":"600519","alert_type":"price_cross","direction":"above","price":1800},'
                 '{"stock_code":"000858","alert_type":"price_cross","status":"bad","direction":"above","price":120}]'
             ),
+            agent_event_auto_portfolio_rules_enabled=False,
         )
 
         with patch("src.notification.NotificationService", return_value=MagicMock()):
@@ -1233,6 +1338,7 @@ class TestEventMonitorConfigIntegration(unittest.TestCase):
                 '[{"stock_code":"600519","alert_type":"sentiment_shift"},'
                 '{"stock_code":"000858","alert_type":"price_cross","direction":"above","price":120}]'
             ),
+            agent_event_auto_portfolio_rules_enabled=False,
         )
 
         with patch("src.notification.NotificationService", return_value=MagicMock()):
@@ -1241,6 +1347,280 @@ class TestEventMonitorConfigIntegration(unittest.TestCase):
         self.assertIsNotNone(monitor)
         self.assertEqual(len(monitor.rules), 1)
         self.assertEqual(monitor.rules[0].stock_code, "000858")
+
+    def test_build_event_monitor_propagates_jin10_api_key(self):
+        from src.agent.events import build_event_monitor_from_config
+
+        config = SimpleNamespace(
+            agent_event_monitor_enabled=True,
+            jin10_api_key="jin10-secret",
+            agent_event_alert_rules_json=(
+                '[{"stock_code":"XAUUSD","alert_type":"price_spike","direction":"both","change_pct":1.2}]'
+            ),
+            agent_event_auto_portfolio_rules_enabled=False,
+        )
+
+        with patch("src.notification.NotificationService", return_value=MagicMock()):
+            monitor = build_event_monitor_from_config(config=config)
+
+        self.assertIsNotNone(monitor)
+        self.assertEqual(getattr(monitor, "_jin10_api_key", ""), "jin10-secret")
+
+    def test_build_event_monitor_notification_is_brief(self):
+        from src.agent.events import TriggeredAlert, ICBasisAlert, build_event_monitor_from_config
+
+        sent_payloads = []
+
+        class _Notifier:
+            def send(self, content, **kwargs):
+                sent_payloads.append(content)
+                return True
+
+        config = SimpleNamespace(
+            agent_event_monitor_enabled=True,
+            agent_event_alert_rules_json=(
+                '[{"stock_code":"IC","alert_type":"basis_spike","deep_threshold":10,"change_threshold":2}]'
+            ),
+            jin10_api_key="",
+            agent_event_auto_portfolio_rules_enabled=False,
+        )
+
+        monitor = build_event_monitor_from_config(config=config, notifier=_Notifier())
+        self.assertIsNotNone(monitor)
+        triggered = TriggeredAlert(rule=ICBasisAlert(stock_code="IC"), message="IC贴水继续走阔")
+        monitor._callbacks[0](triggered)
+
+        self.assertEqual(len(sent_payloads), 1)
+        self.assertIn("IC贴水预警 | IC", sent_payloads[0])
+        self.assertIn("触发事件: IC贴水继续走阔", sent_payloads[0])
+        self.assertIn("影响策略: IC贴水策略 / 认沽保护", sent_payloads[0])
+        self.assertIn("建议动作: 先盯IC贴水与认沽保护", sent_payloads[0])
+        self.assertIn("是否立即关注: 是", sent_payloads[0])
+
+    def test_event_monitor_notification_suppresses_same_day_duplicate_from_state(self):
+        from src.agent.events import TriggeredAlert, PriceAlert, build_event_monitor_from_config
+
+        sent_payloads = []
+
+        class _Notifier:
+            def send(self, content, **kwargs):
+                sent_payloads.append(content)
+                return True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "event_state.json"
+            config = SimpleNamespace(
+                agent_event_monitor_enabled=True,
+                agent_event_alert_rules_json=(
+                    '[{"stock_code":"600519","alert_type":"price_cross","direction":"below","price":1400,'
+                    '"metadata":{"kind":"holding_stop_loss","symbol_name":"贵州茅台"}}]'
+                ),
+                agent_event_auto_portfolio_rules_enabled=False,
+                agent_event_monitor_state_path=str(state_path),
+                jin10_api_key="",
+            )
+
+            monitor = build_event_monitor_from_config(config=config, notifier=_Notifier())
+            self.assertIsNotNone(monitor)
+            first = TriggeredAlert(
+                rule=PriceAlert(
+                    stock_code="600519",
+                    direction="below",
+                    price=1400.0,
+                    metadata={"kind": "holding_stop_loss", "symbol_name": "贵州茅台"},
+                ),
+                message="贵州茅台 跌破持仓防守位 1400元，当前 1398元。",
+            )
+            monitor._callbacks[0](first)
+            self.assertEqual(len(sent_payloads), 1)
+
+            monitor = build_event_monitor_from_config(config=config, notifier=_Notifier())
+            self.assertIsNotNone(monitor)
+            duplicate = TriggeredAlert(
+                rule=PriceAlert(
+                    stock_code="600519",
+                    direction="below",
+                    price=1400.0,
+                    metadata={"kind": "holding_stop_loss", "symbol_name": "贵州茅台"},
+                ),
+                message="贵州茅台 跌破持仓防守位 1400元，当前 1395元。",
+            )
+            monitor._callbacks[0](duplicate)
+
+            self.assertEqual(len(sent_payloads), 1)
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(saved.get("sent_keys", [])), 1)
+
+    def test_build_event_monitor_notification_uses_holding_stop_loss_semantics(self):
+        from src.agent.events import TriggeredAlert, PriceAlert, build_event_monitor_from_config
+
+        sent_payloads = []
+
+        class _Notifier:
+            def send(self, content, **kwargs):
+                sent_payloads.append(content)
+                return True
+
+        config = SimpleNamespace(
+            agent_event_monitor_enabled=True,
+            agent_event_alert_rules_json='[]',
+            agent_event_auto_portfolio_rules_enabled=False,
+            jin10_api_key="",
+        )
+
+        monitor = build_event_monitor_from_config(config=config, notifier=_Notifier())
+        self.assertIsNone(monitor)
+
+        config.agent_event_alert_rules_json = (
+            '[{"stock_code":"600519","alert_type":"price_cross","direction":"below","price":1400,'
+            '"metadata":{"kind":"holding_stop_loss","symbol_name":"贵州茅台"}}]'
+        )
+        monitor = build_event_monitor_from_config(config=config, notifier=_Notifier())
+        self.assertIsNotNone(monitor)
+        triggered = TriggeredAlert(
+            rule=PriceAlert(
+                stock_code="600519",
+                direction="below",
+                price=1400.0,
+                metadata={"kind": "holding_stop_loss", "symbol_name": "贵州茅台"},
+            ),
+            message="贵州茅台 跌破持仓防守位 1400元，当前 1398元。",
+        )
+        monitor._callbacks[0](triggered)
+
+        self.assertEqual(len(sent_payloads), 1)
+        self.assertIn("持仓止损预警 | 贵州茅台(600519)", sent_payloads[0])
+        self.assertIn("触发事件: 贵州茅台 跌破持仓止损位 1400元", sent_payloads[0])
+        self.assertIn("影响策略: 当前持仓风控 / 减仓止损", sent_payloads[0])
+        self.assertIn("建议动作: 立即检查仓位与成交", sent_payloads[0])
+
+    def test_build_event_monitor_notification_uses_holding_reversal_fail_semantics(self):
+        from src.agent.events import TriggeredAlert, PriceAlert, build_event_monitor_from_config
+
+        sent_payloads = []
+
+        class _Notifier:
+            def send(self, content, **kwargs):
+                sent_payloads.append(content)
+                return True
+
+        config = SimpleNamespace(
+            agent_event_monitor_enabled=True,
+            agent_event_alert_rules_json=(
+                '[{"stock_code":"600519","alert_type":"price_cross","direction":"below","price":1420.92,'
+                '"metadata":{"kind":"holding_reversal_fail","symbol_name":"贵州茅台"}}]'
+            ),
+            agent_event_auto_portfolio_rules_enabled=False,
+            jin10_api_key="",
+        )
+
+        monitor = build_event_monitor_from_config(config=config, notifier=_Notifier())
+        self.assertIsNotNone(monitor)
+        triggered = TriggeredAlert(
+            rule=PriceAlert(
+                stock_code="600519",
+                direction="below",
+                price=1420.92,
+                metadata={"kind": "holding_reversal_fail", "symbol_name": "贵州茅台"},
+            ),
+            message="贵州茅台 尾盘冲高触及 1421元 后回落失守，当前 1419元。",
+        )
+        monitor._callbacks[0](triggered)
+
+        self.assertEqual(len(sent_payloads), 1)
+        self.assertIn("持仓冲高回落提醒 | 贵州茅台(600519)", sent_payloads[0])
+        self.assertIn("触发事件: 贵州茅台 尾盘冲高后跌回压力位 1421元 下方", sent_payloads[0])
+        self.assertIn("影响策略: 当前持仓节奏 / 尾盘失败减仓", sent_payloads[0])
+        self.assertIn("建议动作: 立即检查量能与尾盘回落幅度", sent_payloads[0])
+
+    def test_price_alert_holding_reversal_fail_arms_then_triggers(self):
+        from src.agent.events import EventMonitor, PriceAlert, AlertStatus
+
+        monitor = EventMonitor()
+        rule = PriceAlert(
+            stock_code="600519",
+            direction="below",
+            price=1420.92,
+            metadata={
+                "kind": "holding_reversal_fail",
+                "symbol_name": "贵州茅台",
+                "reversal_trigger_price": 1420.92,
+                "arm_after_minutes": 14 * 60,
+                "max_reversal_window_minutes": 120,
+                "reversal_min_peak_buffer_pct": 0.0,
+            },
+        )
+        monitor.add_alert(rule)
+
+        mock_fetcher = MagicMock()
+        mock_fetcher.get_realtime_quote.side_effect = [
+            SimpleNamespace(price=1422.0),
+            SimpleNamespace(price=1419.5),
+        ]
+        with patch("data_provider.DataFetcherManager", return_value=mock_fetcher), \
+             patch("src.agent.events.datetime") as mock_datetime, \
+             patch("src.agent.events.time.time", side_effect=[1000.0] * 20):
+            mock_datetime.now.side_effect = [
+                __import__("datetime").datetime(2026, 4, 27, 14, 35),
+                __import__("datetime").datetime(2026, 4, 27, 14, 40),
+            ]
+            first = asyncio.run(monitor.check_all())
+            self.assertEqual(first, [])
+            self.assertTrue(rule.metadata.get("armed"))
+            self.assertEqual(rule.status, AlertStatus.ACTIVE)
+
+            second = asyncio.run(monitor.check_all())
+
+        self.assertEqual(len(second), 1)
+        self.assertIn("尾盘冲高触及", second[0].message)
+        self.assertEqual(rule.status, AlertStatus.TRIGGERED)
+
+    def test_daily_reset_reactivates_auto_portfolio_rule(self):
+        from src.agent.events import EventMonitor, PriceAlert, AlertStatus
+
+        monitor = EventMonitor()
+        rule = PriceAlert(
+            stock_code="600519",
+            direction="below",
+            price=1400.0,
+            metadata={
+                "kind": "holding_stop_loss",
+                "symbol_name": "贵州茅台",
+                "daily_reset": True,
+                "monitor_date": "1999-01-01",
+            },
+        )
+        rule.status = AlertStatus.TRIGGERED
+        monitor.add_alert(rule)
+
+        mock_fetcher = MagicMock()
+        mock_fetcher.get_realtime_quote.return_value = SimpleNamespace(price=1398.0)
+
+        with patch("data_provider.DataFetcherManager", return_value=mock_fetcher), \
+             patch("src.agent.events.date") as mock_date, \
+             patch("src.agent.events.time.time", side_effect=[1000.0, 1000.0, 1000.0]):
+            mock_date.today.return_value = __import__("datetime").date(2026, 4, 27)
+            alerts = asyncio.run(monitor.check_all())
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(rule.status, AlertStatus.TRIGGERED)
+        self.assertEqual(rule.metadata.get("monitor_date"), "2026-04-27")
+
+    def test_check_all_reuses_same_quote_for_multiple_rules_of_one_symbol(self):
+        from src.agent.events import EventMonitor, PriceAlert
+
+        monitor = EventMonitor()
+        monitor.add_alert(PriceAlert(stock_code="600519", direction="below", price=1400.0))
+        monitor.add_alert(PriceAlert(stock_code="600519", direction="above", price=1490.0))
+
+        mock_fetcher = MagicMock()
+        mock_fetcher.get_realtime_quote.return_value = SimpleNamespace(price=1458.49)
+
+        with patch("data_provider.DataFetcherManager", return_value=mock_fetcher):
+            alerts = asyncio.run(monitor.check_all())
+
+        self.assertEqual(len(alerts), 0)
+        self.assertEqual(mock_fetcher.get_realtime_quote.call_count, 1)
 
 
 # ============================================================

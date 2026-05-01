@@ -2,7 +2,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
+import { backtestApi } from '../../api/backtest';
 import { historyApi } from '../../api/history';
+import { portfolioApi } from '../../api/portfolio';
 import { useStockPoolStore } from '../../stores';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
 import HomePage from '../HomePage';
@@ -36,6 +38,18 @@ vi.mock('../../api/analysis', async () => {
     },
   };
 });
+
+vi.mock('../../api/backtest', () => ({
+  backtestApi: {
+    run: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/portfolio', () => ({
+  portfolioApi: {
+    getSnapshot: vi.fn(),
+  },
+}));
 
 vi.mock('../../hooks/useTaskStream', () => ({
   useTaskStream: vi.fn(),
@@ -74,6 +88,29 @@ describe('HomePage', () => {
     vi.clearAllMocks();
     navigateMock.mockReset();
     useStockPoolStore.getState().resetDashboardState();
+    vi.mocked(backtestApi.run).mockResolvedValue({
+      candidateCount: 1,
+      processed: 1,
+      saved: 1,
+      completed: 1,
+      insufficient: 0,
+      errors: 0,
+    });
+    vi.mocked(portfolioApi.getSnapshot).mockResolvedValue({
+      asOf: '2026-03-18',
+      costMethod: 'fifo',
+      currency: 'CNY',
+      accountCount: 0,
+      totalCash: 0,
+      totalMarketValue: 0,
+      totalEquity: 0,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
+      feeTotal: 0,
+      taxTotal: 0,
+      fxStale: false,
+      accounts: [],
+    });
   });
 
   it('renders the dashboard workspace and auto-loads the first report', async () => {
@@ -108,6 +145,105 @@ describe('HomePage', () => {
         name: getReportText(normalizeReportLanguage(historyReport.meta.reportLanguage)).fullReport,
       }),
     ).toBeInTheDocument();
+  });
+
+  it('starts a forced portfolio analysis from the URL and clears the launch query', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 20,
+      items: [],
+    });
+    vi.mocked(analysisApi.analyzeAsync).mockResolvedValue({
+      taskId: 'task-portfolio-1',
+      status: 'pending',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/?source=portfolio&analyze=159326&name=%E7%94%B5%E7%BD%91%E8%AE%BE%E5%A4%87&force=1']}>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(analysisApi.analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+        stockCode: '159326',
+        stockName: '电网设备',
+        originalQuery: '159326',
+        selectionSource: 'portfolio',
+        forceRefresh: true,
+      }));
+    });
+    expect(backtestApi.run).toHaveBeenCalledWith({
+      code: '159326',
+      force: true,
+      minAgeDays: 0,
+    });
+    expect(navigateMock).toHaveBeenCalledWith('/', { replace: true });
+  });
+
+  it('marks history rows that are current holdings', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [historyItem],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+    vi.mocked(portfolioApi.getSnapshot).mockResolvedValue({
+      asOf: '2026-03-18',
+      costMethod: 'fifo',
+      currency: 'CNY',
+      accountCount: 1,
+      totalCash: 0,
+      totalMarketValue: 1000,
+      totalEquity: 1000,
+      realizedPnl: 0,
+      unrealizedPnl: 0,
+      feeTotal: 0,
+      taxTotal: 0,
+      fxStale: false,
+      accounts: [
+        {
+          accountId: 1,
+          accountName: '主账户',
+          market: 'cn',
+          baseCurrency: 'CNY',
+          asOf: '2026-03-18',
+          costMethod: 'fifo',
+          totalCash: 0,
+          totalMarketValue: 1000,
+          totalEquity: 1000,
+          realizedPnl: 0,
+          unrealizedPnl: 0,
+          feeTotal: 0,
+          taxTotal: 0,
+          fxStale: false,
+          positions: [
+            {
+              symbol: '600519.SH',
+              market: 'cn',
+              currency: 'CNY',
+              quantity: 1,
+              avgCost: 1000,
+              totalCost: 1000,
+              lastPrice: 1000,
+              marketValueBase: 1000,
+              unrealizedPnlBase: 0,
+              valuationCurrency: 'CNY',
+            },
+          ],
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('持仓')).toBeInTheDocument();
   });
 
   it('shows the empty report workspace when history is empty', async () => {

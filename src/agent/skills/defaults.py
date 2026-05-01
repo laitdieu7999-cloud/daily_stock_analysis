@@ -185,10 +185,14 @@ def _pick_primary_default_skill_id(candidates: List[object]) -> str:
         for skill in candidates
         if bool(getattr(skill, "default_active", False))
     ]
+    if "bull_trend" in preferred:
+        return "bull_trend"
     if preferred:
         return preferred[0]
 
     fallback = [str(getattr(skill, "name", "")).strip() for skill in candidates]
+    if "bull_trend" in fallback:
+        return "bull_trend"
     if fallback:
         return fallback[0]
 

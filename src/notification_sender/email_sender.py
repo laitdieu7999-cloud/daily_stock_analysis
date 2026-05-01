@@ -6,6 +6,11 @@ Email 发送提醒服务
 1. 通过 SMTP 发送 Email 消息
 """
 import logging
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from typing import Optional, List
 from datetime import datetime
 from email.mime.text import MIMEText
@@ -130,6 +135,95 @@ class EmailSender:
                 server.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def _should_use_mail_app_fallback() -> bool:
+        """Use Mail.app as a local fallback on macOS when SMTP is unavailable."""
+        return sys.platform == "darwin" and shutil.which("osascript") is not None
+
+    @staticmethod
+    def _to_applescript_string(value: str) -> str:
+        """Encode multi-line text into an AppleScript string expression."""
+        normalized = (value or "").replace("\r\n", "\n").replace("\r", "\n")
+        parts = normalized.split("\n")
+        if not parts:
+            return '""'
+        encoded_parts = [
+            '"' + part.replace("\\", "\\\\").replace('"', '\\"') + '"'
+            for part in parts
+        ]
+        return " & return & ".join(encoded_parts)
+
+    @staticmethod
+    def _escape_applescript_literal(value: str) -> str:
+        return (value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+    def _send_via_mail_app(
+        self,
+        subject: str,
+        body: str,
+        receivers: List[str],
+        *,
+        attachment_path: Optional[str] = None,
+    ) -> bool:
+        """Fallback to Mail.app for local delivery when direct SMTP fails."""
+        if not self._should_use_mail_app_fallback():
+            return False
+
+        recipients_script = "\n".join(
+            '        make new to recipient at end of to recipients with properties '
+            f'{{address:"{self._escape_applescript_literal(r)}"}}'
+            for r in receivers
+        )
+        attachment_script = ""
+        if attachment_path:
+            escaped_attachment = self._escape_applescript_literal(attachment_path)
+            attachment_script = (
+                f'        make new attachment with properties {{file name:POSIX file "{escaped_attachment}"}} '
+                "at after the last paragraph\n"
+            )
+
+        script = f'''
+tell application "Mail"
+    activate
+    set newMessage to make new outgoing message with properties {{subject:{self._to_applescript_string(subject)}, content:{self._to_applescript_string(body)}, visible:false}}
+    tell newMessage
+{recipients_script}
+{attachment_script}        send
+    end tell
+end tell
+'''
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".applescript", delete=False, encoding="utf-8"
+            ) as script_file:
+                script_file.write(script)
+                script_path = script_file.name
+            result = subprocess.run(
+                ["osascript", script_path],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                logger.info("Mail.app 回退发送成功，收件人: %s", receivers)
+                return True
+            logger.error(
+                "Mail.app 回退发送失败: rc=%s stdout=%s stderr=%s",
+                result.returncode,
+                result.stdout.strip(),
+                result.stderr.strip(),
+            )
+            return False
+        except Exception as exc:
+            logger.error("Mail.app 回退发送失败: %s", exc)
+            return False
+        finally:
+            try:
+                os.unlink(script_path)
+            except Exception:
+                pass
     
     def send_to_email(
         self, content: str, subject: Optional[str] = None, receivers: Optional[List[str]] = None
@@ -211,9 +305,15 @@ class EmailSender:
             return False
         except smtplib.SMTPConnectError as e:
             logger.error(f"邮件发送失败：无法连接 SMTP 服务器 - {e}")
+            if self._should_use_mail_app_fallback():
+                logger.warning("SMTP 连接失败，尝试回退到 Mail.app 发送")
+                return self._send_via_mail_app(subject, content, receivers)
             return False
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
+            if self._should_use_mail_app_fallback():
+                logger.warning("SMTP 发送失败，尝试回退到 Mail.app 发送")
+                return self._send_via_mail_app(subject, content, receivers)
             return False
         finally:
             self._close_server(server)
@@ -270,6 +370,27 @@ class EmailSender:
             return True
         except Exception as e:
             logger.error("邮件（内联图片）发送失败: %s", e)
+            if self._should_use_mail_app_fallback():
+                logger.warning("内联图片邮件 SMTP 发送失败，尝试回退到 Mail.app 附件发送")
+                temp_image_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="wb", suffix=".png", delete=False
+                    ) as image_file:
+                        image_file.write(image_bytes)
+                        temp_image_path = image_file.name
+                    return self._send_via_mail_app(
+                        subject,
+                        "报告已生成，详见附件图片。",
+                        receivers,
+                        attachment_path=temp_image_path,
+                    )
+                finally:
+                    if temp_image_path:
+                        try:
+                            os.unlink(temp_image_path)
+                        except Exception:
+                            pass
             return False
         finally:
             self._close_server(server)

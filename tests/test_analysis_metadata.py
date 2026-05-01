@@ -15,11 +15,12 @@ class TestSelectionSourceConstants:
     def test_selection_sources_tuple(self):
         """Test that SELECTION_SOURCES is a tuple with expected values"""
         assert isinstance(SELECTION_SOURCES, tuple)
-        assert len(SELECTION_SOURCES) == 4
+        assert len(SELECTION_SOURCES) == 5
         assert "manual" in SELECTION_SOURCES
         assert "autocomplete" in SELECTION_SOURCES
         assert "import" in SELECTION_SOURCES
         assert "image" in SELECTION_SOURCES
+        assert "portfolio" in SELECTION_SOURCES
 
     def test_selection_sources_order(self):
         """Test that selection sources are in expected order"""
@@ -27,6 +28,7 @@ class TestSelectionSourceConstants:
         assert SELECTION_SOURCES[1] == "autocomplete"
         assert SELECTION_SOURCES[2] == "import"
         assert SELECTION_SOURCES[3] == "image"
+        assert SELECTION_SOURCES[4] == "portfolio"
 
     def test_selection_sources_unique(self):
         """Test that selection source values are unique"""
@@ -201,6 +203,8 @@ class TestSelectionSourceBusinessLogic:
         assert "import" in SELECTION_SOURCES
         # Image recognition
         assert "image" in SELECTION_SOURCES
+        # Portfolio holding click-through
+        assert "portfolio" in SELECTION_SOURCES
 
     def test_no_redundant_sources(self):
         """Test that there are no redundant or duplicate selection sources"""
@@ -210,6 +214,7 @@ class TestSelectionSourceBusinessLogic:
             "autocomplete": "User selects from autocomplete list",
             "import": "User uses batch import function",
             "image": "User uses image recognition function",
+            "portfolio": "User launches analysis from portfolio holdings",
         }
 
         assert len(SELECTION_SOURCES) == len(unique_patterns)
@@ -270,6 +275,7 @@ class TestSelectionSourceDocumentation:
             "autocomplete": "User selects stock through autocomplete component",
             "import": "User batch adds stocks through import function",
             "image": "User adds stocks through image recognition function",
+            "portfolio": "User launches analysis from portfolio holdings",
         }
 
         for source in SELECTION_SOURCES:
@@ -297,6 +303,10 @@ class TestSelectionSourceDocumentation:
             "image": [
                 "User uploads stock screenshot for recognition",
                 "User uploads market image for recognition",
+            ],
+            "portfolio": [
+                "User clicks a holding stock in the portfolio page",
+                "User launches a forced analysis from current holdings",
             ],
         }
 
