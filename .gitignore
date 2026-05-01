@@ -82,3 +82,7 @@ verify_*.py
 static/
 /apps/dsa-desktop/dist/
 /apps/dsa-desktop/node_modules/
+/apps/dsa-desktop/package-lock.json
+
+# Local duplicate generated while building the desktop app.
+/main.js
