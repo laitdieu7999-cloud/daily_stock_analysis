@@ -66,6 +66,27 @@ NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
 }
 
 
+def _parse_code_list(value: str) -> List[str]:
+    return [
+        (code or "").strip().upper()
+        for code in (value or "").split(",")
+        if (code or "").strip()
+    ]
+
+
+def _merge_code_lists(*code_lists: List[str]) -> List[str]:
+    merged: List[str] = []
+    seen = set()
+    for code_list in code_lists:
+        for code in code_list or []:
+            normalized = (code or "").strip().upper()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+    return merged
+
+
 def parse_env_bool(value: Optional[str], default: bool = False) -> bool:
     """Parse common truthy/falsey environment-style values."""
     if value is None:
@@ -574,8 +595,10 @@ class Config:
     - 类方法 get_instance() 实现单例访问
     """
     
-    # === 自选股配置 ===
+    # === 股票名单配置 ===
+    # stock_list 保持作为持仓/主分析名单；watchlist_stock_list 是独立自选股池。
     stock_list: List[str] = field(default_factory=list)
+    watchlist_stock_list: List[str] = field(default_factory=list)
 
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
@@ -685,8 +708,33 @@ class Config:
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
+    agent_event_auto_portfolio_rules_enabled: bool = True  # Auto-build holdings-driven intraday alert rules
+    agent_event_auto_portfolio_max_positions: int = 16  # Max holdings to auto-monitor
     intraday_snapshot_enabled: bool = False  # Enable lightweight intraday snapshot collection for replay
     intraday_snapshot_interval_minutes: int = 5  # Snapshot polling interval
+    stock_intraday_reminder_enabled: bool = False  # Re-send actionable stock buy/sell reminders during CN market hours
+    stock_intraday_reminder_max_items: int = 6  # Cap actionable stock reminders per cycle
+    stock_intraday_reminder_analysis_max_age_days: int = 3  # Only use recent analysis rows for intraday reminders
+    stock_intraday_self_check_enabled: bool = True  # Send one short pre-open monitor self-check
+    stock_intraday_self_check_time: str = "09:25"  # Pre-open self-check time
+    stock_intraday_replay_ledger_enabled: bool = True  # Record triggered intraday alerts to a replay ledger
+    stock_intraday_holding_cooldown_minutes: int = 30  # Cooldown for same holding-risk alert
+    stock_intraday_holding_realtime_radar_enabled: bool = True  # Enable live holding risk radar beyond saved analysis signals
+    stock_intraday_holding_intraday_drop_pct: float = -3.0  # Trigger holding risk when intraday drop exceeds this pct
+    stock_intraday_holding_ma20_break_buffer_pct: float = 0.2  # Buffer below saved MA20 before alerting
+    stock_intraday_holding_reversal_from_high_pct: float = 3.0  # Trigger on intraday failure from high
+    stock_intraday_holding_tail_start_time: str = "14:30"  # Start tail-session MA5 risk checks
+    stock_intraday_watchlist_daily_limit: int = 1  # Max watchlist buy alerts per symbol per day
+    stock_intraday_systemic_batch_threshold: int = 3  # Merge holding-risk alerts when many positions trigger together
+    stock_intraday_bad_tick_max_abs_change_pct: float = 25.0  # Isolate suspicious realtime quote jumps
+    stock_intraday_watchlist_buy_start_time: str = "14:30"  # Watchlist buy alerts only start after this time
+    stock_intraday_watchlist_buy_end_time: str = "14:55"  # Watchlist buy alerts stop after this time
+    stock_intraday_watchlist_min_change_pct: float = -1.5  # Suppress weak intraday watchlist buys below this pct
+    stock_intraday_watchlist_max_change_pct: float = 2.5  # Suppress overheated intraday watchlist buys above this pct
+    stock_intraday_watchlist_max_stop_loss_distance_pct: float = 3.5  # Max loss-to-stop distance for watchlist buys
+    stock_intraday_watchlist_ma_proximity_pct: float = 1.5  # Max distance from saved MA5/MA20 support when available
+    stock_intraday_watchlist_require_quote: bool = True  # Suppress watchlist buys when realtime quote is missing
+    stock_intraday_watchlist_require_stop_loss: bool = True  # Suppress watchlist buys without an explicit stop loss
     market_daily_push_enabled: bool = True  # Enable daily gold/silver/CSI500 push before stock analysis
     market_daily_push_ai_enabled: bool = True  # Enable LLM short commentary for market daily push
     external_tactical_report_path: str = "reports/gemini_daily.md,reports/gemini_black_swan.md"  # Optional local tactical report cache(s), comma-separated
@@ -700,6 +748,7 @@ class Config:
     feishu_webhook_url: Optional[str] = None
     feishu_webhook_secret: Optional[str] = None  # 自定义机器人签名密钥（可选）
     feishu_webhook_keyword: Optional[str] = None  # 自定义机器人关键词（可选）
+    feishu_rate_limit_retry_seconds: float = 2.0  # Wait before retrying Feishu frequency-limit errors
     
     # Telegram 配置（需要同时配置 Bot Token 和 Chat ID）
     telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
@@ -819,10 +868,37 @@ class Config:
     run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
     close_reminder_enabled: bool = False      # 是否启用收盘提醒
     close_reminder_time: str = "15:10"        # 收盘提醒时间（HH:MM 格式）
+    premarket_health_check_enabled: bool = True  # 是否启用盘前健康自检
+    premarket_health_check_time: str = "08:50"  # 盘前健康自检时间（HH:MM 格式）
+    premarket_health_check_push_ok: bool = True  # 健康状态正常时是否也推送
+    nightly_market_outlook_enabled: bool = False  # 是否启用晚间明日大盘预测
+    nightly_market_outlook_time: str = "22:30"     # 晚间明日大盘预测时间（HH:MM 格式）
+    nightly_market_outlook_ai_enabled: bool = True  # 是否在晚间预测中启用市场短评 AI
+    nightly_market_outlook_timeout_seconds: int = 45  # 晚间预测市场数据采集超时
+    market_data_warehouse_enabled: bool = True  # 是否启用本地行情数据沉淀任务
+    market_data_warehouse_time: str = "15:45"  # 每日补齐持仓/自选历史行情时间
+    market_data_warehouse_lookback_days: int = 1825  # 首次补齐回看天数，默认约 5 年
+    market_data_warehouse_refresh_overlap_days: int = 7  # 已有数据时回刷最近几天，修正迟到行情
+    market_data_warehouse_max_symbols: int = 200  # 单次最多刷新多少只标的
+    post_close_shadow_refresh_enabled: bool = True  # 是否启用收盘后理论评分表 + Shadow 账本刷新
+    post_close_shadow_refresh_time: str = "16:20"  # 收盘后理论刷新时间
+    post_close_shadow_refresh_timeout_seconds: int = 900  # 单步刷新超时
+    post_close_shadow_refresh_rebuild_ledger: bool = False  # 是否每日重建 Shadow 账本
+    portfolio_daily_review_enabled: bool = True  # 是否启用每日持仓复盘报告
+    portfolio_daily_review_time: str = "16:05"  # 每日持仓复盘时间
+    portfolio_daily_review_notify_enabled: bool = False  # 是否推送每日持仓复盘，默认只写本地报告
+    portfolio_daily_review_limit_per_symbol: int = 50  # 每只持仓复盘最多回测多少条历史分析
+    workstation_cleanup_enabled: bool = True  # 是否启用旧日志/临时缓存清理
+    workstation_cleanup_time: str = "02:20"  # 每日清理时间
+    workstation_cleanup_log_retention_days: int = 14  # 日志保留天数
+    workstation_cleanup_cache_retention_days: int = 30  # 临时缓存保留天数
+    ai_routing_mode: str = "cloud_analysis_local_workstation"  # 云端 AI 与本地工作站分工模式
+    ai_cloud_analysis_enabled: bool = True  # 复杂分析默认使用云端模型
+    ai_local_model_default_enabled: bool = False  # 本地模型不作为默认股票分析入口
     enable_metaphysical_features: bool = False  # 是否启用玄学/星象研究特征
     metaphysical_cache_dir: str = "./data/metaphysical_cache"  # 玄学特征缓存目录
     market_review_enabled: bool = True        # 是否启用大盘复盘
-    # 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户
+    # 大盘复盘市场区域：cn(A股)、hk(港股)、us(美股)、both(全部市场)
     market_review_region: str = "cn"
     # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
     trading_day_check_enabled: bool = True
@@ -1060,15 +1136,18 @@ class Config:
             default='',
             prefer_env_file=True,
         )
-        stock_list = [
-            (c or "").strip().upper()
-            for c in stock_list_str.split(',')
-            if (c or "").strip()
-        ]
+        stock_list = _parse_code_list(stock_list_str)
         
         # 如果没有配置，使用默认的示例股票
         if not stock_list:
             stock_list = ['600519', '000001', '300750']
+
+        watchlist_stock_list_str = cls._resolve_env_value(
+            'WATCHLIST_STOCK_LIST',
+            default='',
+            prefer_env_file=True,
+        )
+        watchlist_stock_list = _parse_code_list(watchlist_stock_list_str)
         
         # === LiteLLM multi-key parsing ===
         # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
@@ -1294,6 +1373,7 @@ class Config:
         
         return cls(
             stock_list=stock_list,
+            watchlist_stock_list=watchlist_stock_list,
             feishu_app_id=os.getenv('FEISHU_APP_ID'),
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
@@ -1411,6 +1491,16 @@ class Config:
                 minimum=1,
             ),
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            agent_event_auto_portfolio_rules_enabled=parse_env_bool(
+                os.getenv('AGENT_EVENT_AUTO_PORTFOLIO_RULES_ENABLED'),
+                default=True,
+            ),
+            agent_event_auto_portfolio_max_positions=parse_env_int(
+                os.getenv('AGENT_EVENT_AUTO_PORTFOLIO_MAX_POSITIONS'),
+                16,
+                field_name='AGENT_EVENT_AUTO_PORTFOLIO_MAX_POSITIONS',
+                minimum=0,
+            ),
             intraday_snapshot_enabled=parse_env_bool(
                 os.getenv('INTRADAY_SNAPSHOT_ENABLED'),
                 default=False,
@@ -1420,6 +1510,121 @@ class Config:
                 5,
                 field_name='INTRADAY_SNAPSHOT_INTERVAL_MINUTES',
                 minimum=1,
+            ),
+            stock_intraday_reminder_enabled=parse_env_bool(
+                os.getenv('STOCK_INTRADAY_REMINDER_ENABLED'),
+                default=False,
+            ),
+            stock_intraday_reminder_max_items=parse_env_int(
+                os.getenv('STOCK_INTRADAY_REMINDER_MAX_ITEMS'),
+                6,
+                field_name='STOCK_INTRADAY_REMINDER_MAX_ITEMS',
+                minimum=1,
+            ),
+            stock_intraday_reminder_analysis_max_age_days=parse_env_int(
+                os.getenv('STOCK_INTRADAY_REMINDER_ANALYSIS_MAX_AGE_DAYS'),
+                3,
+                field_name='STOCK_INTRADAY_REMINDER_ANALYSIS_MAX_AGE_DAYS',
+                minimum=1,
+            ),
+            stock_intraday_self_check_enabled=parse_env_bool(
+                os.getenv('STOCK_INTRADAY_SELF_CHECK_ENABLED'),
+                default=True,
+            ),
+            stock_intraday_self_check_time=os.getenv(
+                'STOCK_INTRADAY_SELF_CHECK_TIME',
+                '09:25',
+            ),
+            stock_intraday_replay_ledger_enabled=parse_env_bool(
+                os.getenv('STOCK_INTRADAY_REPLAY_LEDGER_ENABLED'),
+                default=True,
+            ),
+            stock_intraday_holding_cooldown_minutes=parse_env_int(
+                os.getenv('STOCK_INTRADAY_HOLDING_COOLDOWN_MINUTES'),
+                30,
+                field_name='STOCK_INTRADAY_HOLDING_COOLDOWN_MINUTES',
+                minimum=0,
+            ),
+            stock_intraday_holding_realtime_radar_enabled=parse_env_bool(
+                os.getenv('STOCK_INTRADAY_HOLDING_REALTIME_RADAR_ENABLED'),
+                default=True,
+            ),
+            stock_intraday_holding_intraday_drop_pct=parse_env_float(
+                os.getenv('STOCK_INTRADAY_HOLDING_INTRADAY_DROP_PCT'),
+                -3.0,
+                field_name='STOCK_INTRADAY_HOLDING_INTRADAY_DROP_PCT',
+            ),
+            stock_intraday_holding_ma20_break_buffer_pct=parse_env_float(
+                os.getenv('STOCK_INTRADAY_HOLDING_MA20_BREAK_BUFFER_PCT'),
+                0.2,
+                field_name='STOCK_INTRADAY_HOLDING_MA20_BREAK_BUFFER_PCT',
+                minimum=0.0,
+            ),
+            stock_intraday_holding_reversal_from_high_pct=parse_env_float(
+                os.getenv('STOCK_INTRADAY_HOLDING_REVERSAL_FROM_HIGH_PCT'),
+                3.0,
+                field_name='STOCK_INTRADAY_HOLDING_REVERSAL_FROM_HIGH_PCT',
+                minimum=0.1,
+            ),
+            stock_intraday_holding_tail_start_time=os.getenv(
+                'STOCK_INTRADAY_HOLDING_TAIL_START_TIME',
+                '14:30',
+            ),
+            stock_intraday_watchlist_daily_limit=parse_env_int(
+                os.getenv('STOCK_INTRADAY_WATCHLIST_DAILY_LIMIT'),
+                1,
+                field_name='STOCK_INTRADAY_WATCHLIST_DAILY_LIMIT',
+                minimum=1,
+            ),
+            stock_intraday_systemic_batch_threshold=parse_env_int(
+                os.getenv('STOCK_INTRADAY_SYSTEMIC_BATCH_THRESHOLD'),
+                3,
+                field_name='STOCK_INTRADAY_SYSTEMIC_BATCH_THRESHOLD',
+                minimum=2,
+            ),
+            stock_intraday_bad_tick_max_abs_change_pct=parse_env_float(
+                os.getenv('STOCK_INTRADAY_BAD_TICK_MAX_ABS_CHANGE_PCT'),
+                25.0,
+                field_name='STOCK_INTRADAY_BAD_TICK_MAX_ABS_CHANGE_PCT',
+                minimum=0.1,
+            ),
+            stock_intraday_watchlist_buy_start_time=os.getenv(
+                'STOCK_INTRADAY_WATCHLIST_BUY_START_TIME',
+                '14:30',
+            ),
+            stock_intraday_watchlist_buy_end_time=os.getenv(
+                'STOCK_INTRADAY_WATCHLIST_BUY_END_TIME',
+                '14:55',
+            ),
+            stock_intraday_watchlist_min_change_pct=parse_env_float(
+                os.getenv('STOCK_INTRADAY_WATCHLIST_MIN_CHANGE_PCT'),
+                -1.5,
+                field_name='STOCK_INTRADAY_WATCHLIST_MIN_CHANGE_PCT',
+            ),
+            stock_intraday_watchlist_max_change_pct=parse_env_float(
+                os.getenv('STOCK_INTRADAY_WATCHLIST_MAX_CHANGE_PCT'),
+                2.5,
+                field_name='STOCK_INTRADAY_WATCHLIST_MAX_CHANGE_PCT',
+            ),
+            stock_intraday_watchlist_max_stop_loss_distance_pct=parse_env_float(
+                os.getenv('STOCK_INTRADAY_WATCHLIST_MAX_STOP_LOSS_DISTANCE_PCT'),
+                3.5,
+                field_name='STOCK_INTRADAY_WATCHLIST_MAX_STOP_LOSS_DISTANCE_PCT',
+                minimum=0.1,
+            ),
+            stock_intraday_watchlist_ma_proximity_pct=parse_env_float(
+                os.getenv('STOCK_INTRADAY_WATCHLIST_MA_PROXIMITY_PCT'),
+                1.5,
+                field_name='STOCK_INTRADAY_WATCHLIST_MA_PROXIMITY_PCT',
+                minimum=0.0,
+            ),
+            stock_intraday_watchlist_require_quote=parse_env_bool(
+                os.getenv('STOCK_INTRADAY_WATCHLIST_REQUIRE_QUOTE'),
+                default=True,
+            ),
+            stock_intraday_watchlist_require_stop_loss=parse_env_bool(
+                os.getenv('STOCK_INTRADAY_WATCHLIST_REQUIRE_STOP_LOSS'),
+                default=True,
             ),
             market_daily_push_enabled=parse_env_bool(
                 os.getenv('MARKET_DAILY_PUSH_ENABLED'),
@@ -1437,6 +1642,12 @@ class Config:
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
             feishu_webhook_keyword=os.getenv('FEISHU_WEBHOOK_KEYWORD'),
+            feishu_rate_limit_retry_seconds=parse_env_float(
+                os.getenv('FEISHU_RATE_LIMIT_RETRY_SECONDS'),
+                2.0,
+                field_name='FEISHU_RATE_LIMIT_RETRY_SECONDS',
+                minimum=0.0,
+            ),
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
             telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
             telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
@@ -1544,6 +1755,126 @@ class Config:
                 default=False,
             ),
             close_reminder_time=(os.getenv('CLOSE_REMINDER_TIME', '15:10').strip() or '15:10'),
+            premarket_health_check_enabled=parse_env_bool(
+                os.getenv('PREMARKET_HEALTH_CHECK_ENABLED'),
+                default=True,
+            ),
+            premarket_health_check_time=(
+                os.getenv('PREMARKET_HEALTH_CHECK_TIME', '08:50').strip() or '08:50'
+            ),
+            premarket_health_check_push_ok=parse_env_bool(
+                os.getenv('PREMARKET_HEALTH_CHECK_PUSH_OK'),
+                default=True,
+            ),
+            nightly_market_outlook_enabled=parse_env_bool(
+                os.getenv('NIGHTLY_MARKET_OUTLOOK_ENABLED'),
+                default=False,
+            ),
+            nightly_market_outlook_time=(
+                os.getenv('NIGHTLY_MARKET_OUTLOOK_TIME', '22:30').strip() or '22:30'
+            ),
+            nightly_market_outlook_ai_enabled=parse_env_bool(
+                os.getenv('NIGHTLY_MARKET_OUTLOOK_AI_ENABLED'),
+                default=True,
+            ),
+            nightly_market_outlook_timeout_seconds=parse_env_int(
+                os.getenv('NIGHTLY_MARKET_OUTLOOK_TIMEOUT_SECONDS'),
+                45,
+                field_name='NIGHTLY_MARKET_OUTLOOK_TIMEOUT_SECONDS',
+                minimum=5,
+            ),
+            market_data_warehouse_enabled=parse_env_bool(
+                os.getenv('MARKET_DATA_WAREHOUSE_ENABLED'),
+                default=True,
+            ),
+            market_data_warehouse_time=(
+                os.getenv('MARKET_DATA_WAREHOUSE_TIME', '15:45').strip() or '15:45'
+            ),
+            market_data_warehouse_lookback_days=parse_env_int(
+                os.getenv('MARKET_DATA_WAREHOUSE_LOOKBACK_DAYS'),
+                1825,
+                field_name='MARKET_DATA_WAREHOUSE_LOOKBACK_DAYS',
+                minimum=30,
+            ),
+            market_data_warehouse_refresh_overlap_days=parse_env_int(
+                os.getenv('MARKET_DATA_WAREHOUSE_REFRESH_OVERLAP_DAYS'),
+                7,
+                field_name='MARKET_DATA_WAREHOUSE_REFRESH_OVERLAP_DAYS',
+                minimum=0,
+                maximum=365,
+            ),
+            market_data_warehouse_max_symbols=parse_env_int(
+                os.getenv('MARKET_DATA_WAREHOUSE_MAX_SYMBOLS'),
+                200,
+                field_name='MARKET_DATA_WAREHOUSE_MAX_SYMBOLS',
+                minimum=1,
+            ),
+            post_close_shadow_refresh_enabled=parse_env_bool(
+                os.getenv('POST_CLOSE_SHADOW_REFRESH_ENABLED'),
+                default=True,
+            ),
+            post_close_shadow_refresh_time=(
+                os.getenv('POST_CLOSE_SHADOW_REFRESH_TIME', '16:20').strip() or '16:20'
+            ),
+            post_close_shadow_refresh_timeout_seconds=parse_env_int(
+                os.getenv('POST_CLOSE_SHADOW_REFRESH_TIMEOUT_SECONDS'),
+                900,
+                field_name='POST_CLOSE_SHADOW_REFRESH_TIMEOUT_SECONDS',
+                minimum=60,
+            ),
+            post_close_shadow_refresh_rebuild_ledger=parse_env_bool(
+                os.getenv('POST_CLOSE_SHADOW_REFRESH_REBUILD_LEDGER'),
+                default=False,
+            ),
+            portfolio_daily_review_enabled=parse_env_bool(
+                os.getenv('PORTFOLIO_DAILY_REVIEW_ENABLED'),
+                default=True,
+            ),
+            portfolio_daily_review_time=(
+                os.getenv('PORTFOLIO_DAILY_REVIEW_TIME', '16:05').strip() or '16:05'
+            ),
+            portfolio_daily_review_notify_enabled=parse_env_bool(
+                os.getenv('PORTFOLIO_DAILY_REVIEW_NOTIFY_ENABLED'),
+                default=False,
+            ),
+            portfolio_daily_review_limit_per_symbol=parse_env_int(
+                os.getenv('PORTFOLIO_DAILY_REVIEW_LIMIT_PER_SYMBOL'),
+                50,
+                field_name='PORTFOLIO_DAILY_REVIEW_LIMIT_PER_SYMBOL',
+                minimum=1,
+                maximum=500,
+            ),
+            workstation_cleanup_enabled=parse_env_bool(
+                os.getenv('WORKSTATION_CLEANUP_ENABLED'),
+                default=True,
+            ),
+            workstation_cleanup_time=(
+                os.getenv('WORKSTATION_CLEANUP_TIME', '02:20').strip() or '02:20'
+            ),
+            workstation_cleanup_log_retention_days=parse_env_int(
+                os.getenv('WORKSTATION_CLEANUP_LOG_RETENTION_DAYS'),
+                14,
+                field_name='WORKSTATION_CLEANUP_LOG_RETENTION_DAYS',
+                minimum=1,
+            ),
+            workstation_cleanup_cache_retention_days=parse_env_int(
+                os.getenv('WORKSTATION_CLEANUP_CACHE_RETENTION_DAYS'),
+                30,
+                field_name='WORKSTATION_CLEANUP_CACHE_RETENTION_DAYS',
+                minimum=1,
+            ),
+            ai_routing_mode=(
+                os.getenv('AI_ROUTING_MODE', 'cloud_analysis_local_workstation').strip()
+                or 'cloud_analysis_local_workstation'
+            ),
+            ai_cloud_analysis_enabled=parse_env_bool(
+                os.getenv('AI_CLOUD_ANALYSIS_ENABLED'),
+                default=True,
+            ),
+            ai_local_model_default_enabled=parse_env_bool(
+                os.getenv('AI_LOCAL_MODEL_DEFAULT_ENABLED'),
+                default=False,
+            ),
             enable_metaphysical_features=parse_env_bool(
                 os.getenv('ENABLE_METAPHYSICAL_FEATURES'),
                 default=False,
@@ -2070,10 +2401,10 @@ class Config:
         """解析大盘复盘市场区域，非法值记录警告后回退为 cn"""
         import logging
         v = (value or 'cn').strip().lower()
-        if v in ('cn', 'us', 'both'):
+        if v in ('cn', 'hk', 'us', 'both'):
             return v
         logging.getLogger(__name__).warning(
-            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / us / both）"
+            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / hk / us / both）"
         )
         return 'cn'
 
@@ -2172,7 +2503,7 @@ class Config:
 
     def refresh_stock_list(self) -> None:
         """
-        热读取 STOCK_LIST 环境变量并更新配置中的自选股列表
+        热读取股票名单环境变量并更新配置中的持仓/自选股列表
         
         支持两种配置方式：
         1. .env 文件（本地开发、定时任务模式） - 修改后下次执行自动生效
@@ -2187,21 +2518,27 @@ class Config:
             # 直接从 .env 文件读取最新的配置
             env_values = dotenv_values(env_path)
             stock_list_str = (env_values.get('STOCK_LIST') or '').strip()
+            watchlist_stock_list_str = (env_values.get('WATCHLIST_STOCK_LIST') or '').strip()
+        else:
+            watchlist_stock_list_str = ''
 
         # 如果 .env 文件不存在或未配置，才尝试从系统环境变量读取
         if not stock_list_str:
             stock_list_str = os.getenv('STOCK_LIST', '')
+        if not watchlist_stock_list_str:
+            watchlist_stock_list_str = os.getenv('WATCHLIST_STOCK_LIST', '')
 
-        stock_list = [
-            (c or "").strip().upper()
-            for c in stock_list_str.split(',')
-            if (c or "").strip()
-        ]
+        stock_list = _parse_code_list(stock_list_str)
 
         if not stock_list:
             stock_list = ['000001']
 
         self.stock_list = stock_list
+        self.watchlist_stock_list = _parse_code_list(watchlist_stock_list_str)
+
+    def get_analysis_stock_list(self) -> List[str]:
+        """Return the union of holdings/main list and the separate watchlist."""
+        return _merge_code_lists(self.stock_list, self.watchlist_stock_list)
     
     def validate_structured(self) -> List[ConfigIssue]:
         """Return structured validation issues with severity levels.
@@ -2406,6 +2743,36 @@ class Config:
                     "收盘提醒已启用，但该时间应为 HH:MM 24 小时制"
                 ),
                 field="CLOSE_REMINDER_TIME",
+            ))
+
+        if self.premarket_health_check_enabled and not _time_pattern.fullmatch((self.premarket_health_check_time or "").strip()):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=(
+                    f"PREMARKET_HEALTH_CHECK_TIME 格式无效：{self.premarket_health_check_time!r}。"
+                    "盘前健康自检已启用，但该时间应为 HH:MM 24 小时制"
+                ),
+                field="PREMARKET_HEALTH_CHECK_TIME",
+            ))
+
+        if self.nightly_market_outlook_enabled and not _time_pattern.fullmatch((self.nightly_market_outlook_time or "").strip()):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=(
+                    f"NIGHTLY_MARKET_OUTLOOK_TIME 格式无效：{self.nightly_market_outlook_time!r}。"
+                    "晚间明日大盘预测已启用，但该时间应为 HH:MM 24 小时制"
+                ),
+                field="NIGHTLY_MARKET_OUTLOOK_TIME",
+            ))
+
+        if self.post_close_shadow_refresh_enabled and not _time_pattern.fullmatch((self.post_close_shadow_refresh_time or "").strip()):
+            issues.append(ConfigIssue(
+                severity="warning",
+                message=(
+                    f"POST_CLOSE_SHADOW_REFRESH_TIME 格式无效：{self.post_close_shadow_refresh_time!r}。"
+                    "收盘后理论回测刷新已启用，但该时间应为 HH:MM 24 小时制"
+                ),
+                field="POST_CLOSE_SHADOW_REFRESH_TIME",
             ))
 
         if self.market_daily_push_enabled and not self.market_daily_push_ai_enabled:

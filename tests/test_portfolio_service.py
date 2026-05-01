@@ -74,6 +74,97 @@ class PortfolioServiceTestCase(unittest.TestCase):
         )
         self.db.save_daily_data(df, code=symbol, data_source="unit-test")
 
+    def test_current_snapshot_uses_realtime_price_when_close_missing(self) -> None:
+        today = date.today()
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=today,
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+
+        with patch.object(PortfolioService, "_fetch_realtime_position_price", return_value=(125.0, "unit-test")):
+            snapshot = self.service.get_portfolio_snapshot(account_id=aid, as_of=today, cost_method="fifo")
+
+        pos = snapshot["accounts"][0]["positions"][0]
+        self.assertAlmostEqual(pos["last_price"], 125.0, places=6)
+        self.assertAlmostEqual(pos["market_value_base"], 1250.0, places=6)
+        self.assertAlmostEqual(pos["unrealized_pnl_base"], 250.0, places=6)
+        self.assertEqual(pos["price_source"], "realtime_quote")
+        self.assertEqual(pos["price_provider"], "unit-test")
+        self.assertTrue(pos["price_available"])
+
+    def test_current_snapshot_uses_close_before_realtime_fallback(self) -> None:
+        today = date.today()
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=today,
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+        self._save_close("600519", today, 118.0)
+
+        with patch.object(
+            PortfolioService,
+            "_fetch_realtime_position_price",
+            side_effect=AssertionError("close price should be used before realtime fallback"),
+        ):
+            snapshot = self.service.get_portfolio_snapshot(account_id=aid, as_of=today, cost_method="fifo")
+
+        pos = snapshot["accounts"][0]["positions"][0]
+        self.assertAlmostEqual(pos["last_price"], 118.0, places=6)
+        self.assertAlmostEqual(pos["market_value_base"], 1180.0, places=6)
+        self.assertAlmostEqual(pos["unrealized_pnl_base"], 180.0, places=6)
+        self.assertEqual(pos["price_source"], "history_close")
+        self.assertTrue(pos["price_available"])
+
+    def test_historical_snapshot_marks_missing_price_without_cost_fallback(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="600519",
+            trade_date=date(2026, 1, 1),
+            side="buy",
+            quantity=10,
+            price=100,
+            market="cn",
+            currency="CNY",
+        )
+
+        with patch.object(
+            PortfolioService,
+            "_fetch_realtime_position_price",
+            side_effect=AssertionError("historical snapshot should not fetch realtime quote"),
+        ):
+            snapshot = self.service.get_portfolio_snapshot(
+                account_id=aid,
+                as_of=date(2026, 1, 2),
+                cost_method="fifo",
+            )
+
+        pos = snapshot["accounts"][0]["positions"][0]
+        self.assertEqual(pos["last_price"], 0.0)
+        self.assertEqual(pos["market_value_base"], 0.0)
+        self.assertEqual(pos["unrealized_pnl_base"], 0.0)
+        self.assertEqual(pos["price_source"], "missing")
+        self.assertFalse(pos["price_available"])
+        self.assertTrue(pos["price_stale"])
+        self.assertEqual(snapshot["accounts"][0]["total_market_value"], 0.0)
+        self.assertEqual(snapshot["accounts"][0]["unrealized_pnl"], 0.0)
+
     def test_snapshot_fifo_vs_avg_on_partial_sell(self) -> None:
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
         aid = account["id"]
@@ -282,6 +373,38 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertAlmostEqual(acc["total_cash"], 1600.0, places=6)
         self.assertAlmostEqual(pos["quantity"], 100.0, places=6)
         self.assertAlmostEqual(pos["avg_cost"], 5.0, places=6)
+
+    def test_snapshot_replays_negative_cost_buy_position(self) -> None:
+        account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")
+        aid = account["id"]
+
+        with self.service.repo.portfolio_write_session() as session:
+            self.service.repo.add_trade_in_session(
+                session=session,
+                account_id=aid,
+                trade_uid=None,
+                symbol="159326",
+                market="cn",
+                currency="CNY",
+                trade_date=date(2026, 1, 2),
+                side="buy",
+                quantity=100.0,
+                price=-514.578,
+                fee=0.0,
+                tax=0.0,
+                note="legacy screenshot import",
+                dedup_hash=None,
+            )
+        self._save_close("159326", date(2026, 1, 2), 1.994)
+
+        snapshot = self.service.get_portfolio_snapshot(account_id=aid, as_of=date(2026, 1, 2), cost_method="fifo")
+        acc = snapshot["accounts"][0]
+        pos = acc["positions"][0]
+
+        self.assertAlmostEqual(acc["total_cash"], 51457.8, places=6)
+        self.assertAlmostEqual(pos["quantity"], 100.0, places=6)
+        self.assertAlmostEqual(pos["avg_cost"], -514.578, places=6)
+        self.assertAlmostEqual(pos["last_price"], 1.994, places=6)
 
     def test_sell_oversell_rejected_before_write(self) -> None:
         account = self.service.create_account(name="Main", broker="Demo", market="cn", base_currency="CNY")

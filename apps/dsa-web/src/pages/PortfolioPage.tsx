@@ -1,11 +1,17 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Pie, PieChart, ResponsiveContainer, Tooltip, Legend, Cell } from 'recharts';
+import { analysisApi, DuplicateTaskError } from '../api/analysis';
+import { dataCenterApi } from '../api/dataCenter';
 import { portfolioApi } from '../api/portfolio';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { ApiErrorAlert, Card, Badge, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
+import type { DataCenterPortfolioRiskRadarItem, DataCenterPortfolioRiskRadarResponse } from '../types/dataCenter';
 import { toDateInputValue } from '../utils/format';
+import { normalizeStockCode } from '../utils/normalizeQuery';
+import { loadStockIndex } from '../utils/stockIndexLoader';
 import type {
   PortfolioAccountItem,
   PortfolioCashDirection,
@@ -23,6 +29,7 @@ import type {
   PortfolioSnapshotResponse,
   PortfolioTradeListItem,
 } from '../types/portfolio';
+import type { StockIndexItem } from '../types/stockIndex';
 
 const PIE_COLORS = ['#00d4ff', '#00ff88', '#ffaa00', '#ff7a45', '#7f8cff', '#ff4466'];
 const DEFAULT_PAGE_SIZE = 20;
@@ -38,6 +45,7 @@ type EventType = 'trade' | 'cash' | 'corporate';
 type FlatPosition = PortfolioPositionItem & {
   accountId: number;
   accountName: string;
+  symbolName?: string;
 };
 
 type PendingDelete =
@@ -48,6 +56,13 @@ type PendingDelete =
 type FxRefreshFeedback = {
   tone: 'neutral' | 'success' | 'warning';
   text: string;
+};
+
+type BulkAnalyzeProgress = {
+  total: number;
+  submitted: number;
+  duplicate: number;
+  failed: number;
 };
 
 type FxRefreshContext = {
@@ -62,6 +77,16 @@ const PORTFOLIO_INPUT_CLASS =
 const PORTFOLIO_SELECT_CLASS = `${PORTFOLIO_INPUT_CLASS} appearance-none pr-10`;
 const PORTFOLIO_FILE_PICKER_CLASS =
   'input-surface input-focus-glow flex h-11 w-full cursor-pointer items-center justify-center rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+const PORTFOLIO_SYMBOL_NAME_FALLBACKS: Record<string, string> = {
+  '838394': '金润股份',
+  '159201': '自由现金',
+  '159326': '电网设备',
+  '159613': '嘉实信安',
+  '159647': '中药ETF',
+  '159869': '游戏ETF',
+  '159937': '黄金9999',
+  '512980': '传媒ETF',
+};
 
 function getTodayIso(): string {
   return toDateInputValue(new Date());
@@ -78,6 +103,31 @@ function formatMoney(value: number | undefined | null, currency = 'CNY'): string
 function formatPct(value: number | undefined | null): string {
   if (value == null || Number.isNaN(value)) return '--';
   return `${value.toFixed(2)}%`;
+}
+
+function hasPositionPrice(row: PortfolioPositionItem): boolean {
+  return row.priceAvailable !== false && row.priceSource !== 'missing';
+}
+
+function formatPositionPrice(row: PortfolioPositionItem): string {
+  if (!hasPositionPrice(row)) return '--';
+  return row.lastPrice.toFixed(4);
+}
+
+function formatPositionMoney(value: number, row: PortfolioPositionItem): string {
+  if (!hasPositionPrice(row)) return '--';
+  return formatMoney(value, row.valuationCurrency);
+}
+
+function getPositionPriceLabel(row: PortfolioPositionItem): string {
+  if (!hasPositionPrice(row)) return '缺价';
+  if (row.priceSource === 'realtime_quote') {
+    return row.priceProvider ? `实时价 · ${row.priceProvider}` : '实时价';
+  }
+  if (row.priceSource === 'history_close') {
+    return row.priceStale && row.priceDate ? `收盘价 · ${row.priceDate}` : '收盘价';
+  }
+  return row.priceSource || '未知来源';
 }
 
 function formatSideLabel(value: PortfolioSide): string {
@@ -151,13 +201,163 @@ function getCsvCommitVariant(result: PortfolioImportCommitResponse, isDryRun: bo
   return result.failedCount > 0 || result.duplicateCount > 0 ? 'warning' : 'success';
 }
 
+function getAsharePnlClass(value: number): string {
+  if (value > 0) return 'text-danger';
+  if (value < 0) return 'text-success';
+  return 'text-secondary';
+}
+
+function formatRadarNumber(value?: number | null): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+    : '暂无';
+}
+
+function formatRadarPercent(value?: number | null): string {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}%` : '暂无';
+}
+
+function riskRadarClass(tone: string): string {
+  if (tone === 'strong') {
+    return 'border-emerald-300/50 bg-emerald-50/80 text-emerald-950';
+  }
+  if (tone === 'weak') {
+    return 'border-rose-300/50 bg-rose-50/80 text-rose-950';
+  }
+  if (tone === 'empty') {
+    return 'border-slate-300/50 bg-slate-50/80 text-slate-800';
+  }
+  if (tone === 'error') {
+    return 'border-red-300/50 bg-red-50/80 text-red-950';
+  }
+  return 'border-amber-300/50 bg-amber-50/80 text-amber-950';
+}
+
+function needsHoldingAnalysis(item: DataCenterPortfolioRiskRadarItem): boolean {
+  return item.totalEvaluations <= 0 || item.label === '先分析';
+}
+
+const PortfolioRiskRadarCard: React.FC<{ item: DataCenterPortfolioRiskRadarItem }> = ({ item }) => (
+  <div className={`rounded-2xl border px-4 py-3 ${riskRadarClass(item.tone)}`}>
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <p className="text-sm font-semibold">{item.title}</p>
+        <p className="mt-1 text-xs leading-5 opacity-90">{item.message}</p>
+      </div>
+      <span className="shrink-0 rounded-full border border-current/20 px-2.5 py-1 text-[11px] font-semibold">
+        {item.label}
+      </span>
+    </div>
+    <div className="mt-3 flex flex-wrap gap-2">
+      <span className="rounded-full bg-white/55 px-2.5 py-1 text-[11px] font-medium opacity-90">
+        市值 {formatRadarNumber(item.marketValueBase)}
+      </span>
+      <span className="rounded-full bg-white/55 px-2.5 py-1 text-[11px] font-medium opacity-90">
+        分析 {formatRadarNumber(item.totalEvaluations)}
+      </span>
+      <span className="rounded-full bg-white/55 px-2.5 py-1 text-[11px] font-medium opacity-90">
+        成熟样本 {formatRadarNumber(item.completedCount)}
+      </span>
+      {item.insufficientCount > 0 ? (
+        <span className="rounded-full bg-white/55 px-2.5 py-1 text-[11px] font-medium opacity-90">
+          未成熟样本 {formatRadarNumber(item.insufficientCount)}
+        </span>
+      ) : null}
+      <span className="rounded-full bg-white/55 px-2.5 py-1 text-[11px] font-medium opacity-90">
+        胜率 {formatRadarPercent(item.winRatePct)}
+      </span>
+      <span className="rounded-full bg-white/55 px-2.5 py-1 text-[11px] font-medium opacity-90">
+        平均收益 {formatRadarPercent(item.avgSimulatedReturnPct)}
+      </span>
+    </div>
+  </div>
+);
+
+const PortfolioRiskRadar: React.FC<{
+  radar: DataCenterPortfolioRiskRadarResponse;
+  refreshing: boolean;
+  bulkAnalyzing: boolean;
+  bulkAnalyzeProgress: BulkAnalyzeProgress | null;
+  onRefresh: () => void;
+  onAnalyzeMissing: () => void;
+  onOpenDataCenter: () => void;
+}> = ({ radar, refreshing, bulkAnalyzing, bulkAnalyzeProgress, onRefresh, onAnalyzeMissing, onOpenDataCenter }) => {
+  if (!radar.items.length) {
+    return null;
+  }
+
+  const weakCount = radar.items.filter((item) => item.tone === 'weak').length;
+  const immatureCount = radar.items.filter((item) => item.label === '待成熟').length;
+  const emptyCount = radar.items.filter((item) => item.label === '先分析' || item.label === '待补齐').length;
+  const missingAnalysisCount = radar.items.filter(needsHoldingAnalysis).length;
+  const finishedAnalyzeCount = bulkAnalyzeProgress
+    ? bulkAnalyzeProgress.submitted + bulkAnalyzeProgress.duplicate + bulkAnalyzeProgress.failed
+    : 0;
+
+  return (
+    <section className="rounded-3xl border border-border/70 bg-card/80 p-5 shadow-soft-card backdrop-blur-sm">
+      <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-secondary-text">持仓风险雷达</p>
+          <h2 className="mt-1 text-lg font-semibold text-foreground">当前持仓的回测风险分层</h2>
+          <p className="mt-1 text-xs leading-5 text-secondary-text">
+            只读取已有持仓和已有回测汇总，不会自动触发新回测。分析次数和成熟样本会分开显示。
+          </p>
+        </div>
+        <div className="flex flex-col items-start gap-2 md:items-end">
+          <div className="text-xs text-secondary-text">
+            {radar.holdingCount} 只持仓 · {weakCount} 个谨慎 · {immatureCount} 个待成熟 · {emptyCount} 个待分析
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onAnalyzeMissing}
+              disabled={bulkAnalyzing || missingAnalysisCount === 0}
+              className="rounded-xl border border-border/70 bg-primary-gradient px-3 py-1.5 text-xs font-medium text-[hsl(var(--primary-foreground))] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {bulkAnalyzing
+                ? `补齐中 ${finishedAnalyzeCount}/${bulkAnalyzeProgress?.total || missingAnalysisCount}`
+                : missingAnalysisCount > 0
+                  ? `一键补齐 ${missingAnalysisCount} 只分析`
+                  : '分析已补齐'}
+            </button>
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={refreshing}
+              className="rounded-xl border border-border/70 bg-surface px-3 py-1.5 text-xs font-medium text-foreground transition hover:bg-hover disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {refreshing ? '刷新中' : '刷新雷达'}
+            </button>
+            <button
+              type="button"
+              onClick={onOpenDataCenter}
+              className="rounded-xl border border-border/70 bg-surface px-3 py-1.5 text-xs font-medium text-foreground transition hover:bg-hover"
+            >
+              去数据页回测
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        {radar.items.map((item) => (
+          <PortfolioRiskRadarCard key={item.code} item={item} />
+        ))}
+      </div>
+    </section>
+  );
+};
+
 const PortfolioPage: React.FC = () => {
+  const navigate = useNavigate();
+
   // Set page title
   useEffect(() => {
     document.title = '持仓分析 - DSA';
   }, []);
 
   const [accounts, setAccounts] = useState<PortfolioAccountItem[]>([]);
+  const [stockIndex, setStockIndex] = useState<StockIndexItem[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<AccountOption>('all');
   const [showCreateAccount, setShowCreateAccount] = useState(false);
   const [accountCreating, setAccountCreating] = useState(false);
@@ -172,11 +372,17 @@ const PortfolioPage: React.FC = () => {
   const [costMethod, setCostMethod] = useState<PortfolioCostMethod>('fifo');
   const [snapshot, setSnapshot] = useState<PortfolioSnapshotResponse | null>(null);
   const [risk, setRisk] = useState<PortfolioRiskResponse | null>(null);
+  const [portfolioRiskRadar, setPortfolioRiskRadar] = useState<DataCenterPortfolioRiskRadarResponse | null>(null);
+  const [bulkAnalyzingHoldings, setBulkAnalyzingHoldings] = useState(false);
+  const [bulkAnalyzeProgress, setBulkAnalyzeProgress] = useState<BulkAnalyzeProgress | null>(null);
+  const [bulkAnalyzeFeedback, setBulkAnalyzeFeedback] = useState<{ variant: PortfolioAlertVariant; message: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [portfolioRiskRadarRefreshing, setPortfolioRiskRadarRefreshing] = useState(false);
   const [fxRefreshing, setFxRefreshing] = useState(false);
   const [fxRefreshFeedback, setFxRefreshFeedback] = useState<FxRefreshFeedback | null>(null);
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [riskWarning, setRiskWarning] = useState<string | null>(null);
+  const [portfolioRiskRadarWarning, setPortfolioRiskRadarWarning] = useState<string | null>(null);
   const [writeWarning, setWriteWarning] = useState<string | null>(null);
 
   const [brokers, setBrokers] = useState<PortfolioImportBrokerItem[]>([]);
@@ -385,9 +591,24 @@ const PortfolioPage: React.FC = () => {
     await loadEventsPage(eventPage);
   }, [eventPage, loadEventsPage]);
 
+  const loadPortfolioRiskRadar = useCallback(async () => {
+    setPortfolioRiskRadarRefreshing(true);
+    try {
+      const radar = await dataCenterApi.getPortfolioRiskRadar();
+      setPortfolioRiskRadar(radar);
+      setPortfolioRiskRadarWarning(null);
+    } catch (err) {
+      setPortfolioRiskRadar(null);
+      const parsed = getParsedApiError(err);
+      setPortfolioRiskRadarWarning(parsed.message || '持仓风险雷达获取失败。');
+    } finally {
+      setPortfolioRiskRadarRefreshing(false);
+    }
+  }, []);
+
   const refreshPortfolioData = useCallback(async (page = eventPage) => {
-    await Promise.all([loadSnapshotAndRisk(), loadEventsPage(page)]);
-  }, [eventPage, loadEventsPage, loadSnapshotAndRisk]);
+    await Promise.all([loadSnapshotAndRisk(), loadEventsPage(page), loadPortfolioRiskRadar()]);
+  }, [eventPage, loadEventsPage, loadPortfolioRiskRadar, loadSnapshotAndRisk]);
 
   useEffect(() => {
     void loadAccounts();
@@ -401,6 +622,32 @@ const PortfolioPage: React.FC = () => {
   useEffect(() => {
     void loadEvents();
   }, [loadEvents]);
+
+  useEffect(() => {
+    void loadPortfolioRiskRadar();
+  }, [loadPortfolioRiskRadar]);
+
+  useEffect(() => {
+    if (!hasAccounts) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadPortfolioRiskRadar();
+    }, 30_000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void loadPortfolioRiskRadar();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [hasAccounts, loadPortfolioRiskRadar]);
 
   useEffect(() => {
     refreshContextRef.current = {
@@ -421,6 +668,36 @@ const PortfolioPage: React.FC = () => {
     }
   }, [writeBlocked]);
 
+  useEffect(() => {
+    let mounted = true;
+    void loadStockIndex().then((result) => {
+      if (!mounted) return;
+      setStockIndex(result.data || []);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const stockNameLookup = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const item of stockIndex) {
+      const keys = [item.displayCode, item.canonicalCode, item.canonicalCode?.split('.')?.[0]]
+        .filter(Boolean) as string[];
+      for (const key of keys) {
+        lookup.set(key, item.nameZh);
+        lookup.set(key.toUpperCase(), item.nameZh);
+      }
+    }
+    for (const [code, name] of Object.entries(PORTFOLIO_SYMBOL_NAME_FALLBACKS)) {
+      if (!lookup.has(code)) {
+        lookup.set(code, name);
+        lookup.set(code.toUpperCase(), name);
+      }
+    }
+    return lookup;
+  }, [stockIndex]);
+
   const positionRows: FlatPosition[] = useMemo(() => {
     if (!snapshot) return [];
     const rows: FlatPosition[] = [];
@@ -430,12 +707,13 @@ const PortfolioPage: React.FC = () => {
           ...position,
           accountId: account.accountId,
           accountName: account.accountName,
+          symbolName: stockNameLookup.get(position.symbol) || stockNameLookup.get(String(position.symbol || '').toUpperCase()) || undefined,
         });
       }
     }
     rows.sort((a, b) => Number(b.marketValueBase || 0) - Number(a.marketValueBase || 0));
     return rows;
-  }, [snapshot]);
+  }, [snapshot, stockNameLookup]);
 
   const sectorPieData = useMemo(() => {
     const sectors = risk?.sectorConcentration?.topSectors || [];
@@ -463,6 +741,87 @@ const PortfolioPage: React.FC = () => {
 
   const concentrationPieData = sectorPieData.length > 0 ? sectorPieData : positionFallbackPieData;
   const concentrationMode = sectorPieData.length > 0 ? 'sector' : 'position';
+  const missingAnalysisTargets = useMemo(
+    () => (portfolioRiskRadar?.items || []).filter(needsHoldingAnalysis),
+    [portfolioRiskRadar],
+  );
+
+  const handleAnalyzeMissingHoldings = useCallback(async () => {
+    if (bulkAnalyzingHoldings) {
+      return;
+    }
+
+    if (missingAnalysisTargets.length === 0) {
+      setBulkAnalyzeFeedback({
+        variant: 'info',
+        message: '当前持仓已有分析样本，不需要补齐。',
+      });
+      return;
+    }
+
+    const nextProgress: BulkAnalyzeProgress = {
+      total: missingAnalysisTargets.length,
+      submitted: 0,
+      duplicate: 0,
+      failed: 0,
+    };
+
+    setBulkAnalyzingHoldings(true);
+    setBulkAnalyzeFeedback(null);
+    setBulkAnalyzeProgress(nextProgress);
+
+    for (const item of missingAnalysisTargets) {
+      const stockCode = normalizeStockCode(item.code) || item.code;
+      const stockName = stockNameLookup.get(item.code) || stockNameLookup.get(stockCode);
+
+      try {
+        await analysisApi.analyzeAsync({
+          stockCode,
+          stockName,
+          originalQuery: stockCode,
+          reportType: 'detailed',
+          forceRefresh: false,
+          selectionSource: 'portfolio',
+          notify: false,
+        });
+        nextProgress.submitted += 1;
+      } catch (err) {
+        if (err instanceof DuplicateTaskError) {
+          nextProgress.duplicate += 1;
+        } else {
+          nextProgress.failed += 1;
+          console.warn('Bulk holding analysis failed:', stockCode, err);
+        }
+      }
+
+      setBulkAnalyzeProgress({ ...nextProgress });
+    }
+
+    setBulkAnalyzingHoldings(false);
+    setBulkAnalyzeFeedback({
+      variant: nextProgress.failed > 0 ? 'warning' : 'success',
+      message: `已提交 ${nextProgress.submitted} 只持仓分析，${nextProgress.duplicate} 只已在队列中，${nextProgress.failed} 只失败。分析完成后风险雷达会自动刷新。`,
+    });
+    await loadPortfolioRiskRadar();
+  }, [bulkAnalyzingHoldings, loadPortfolioRiskRadar, missingAnalysisTargets, stockNameLookup]);
+
+  const handleAnalyzePosition = useCallback((row: FlatPosition) => {
+    const stockCode = normalizeStockCode(row.symbol);
+    if (!stockCode) {
+      return;
+    }
+
+    const params = new URLSearchParams({
+      analyze: stockCode,
+      source: 'portfolio',
+      force: '1',
+    });
+    if (row.symbolName) {
+      params.set('name', row.symbolName);
+    }
+
+    navigate(`/?${params.toString()}`);
+  }, [navigate]);
 
   const handleTradeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -651,7 +1010,7 @@ const PortfolioPage: React.FC = () => {
   };
 
   const handleRefresh = async () => {
-    await Promise.all([loadAccounts(), loadSnapshotAndRisk(), loadEvents(), loadBrokers()]);
+    await Promise.all([loadAccounts(), loadSnapshotAndRisk(), loadEvents(), loadBrokers(), loadPortfolioRiskRadar()]);
   };
 
   const reloadSnapshotAndRiskForScope = useCallback(async (
@@ -946,10 +1305,38 @@ const PortfolioPage: React.FC = () => {
         </Card>
       </section>
 
+      {portfolioRiskRadar ? (
+        <PortfolioRiskRadar
+          radar={portfolioRiskRadar}
+          refreshing={portfolioRiskRadarRefreshing}
+          bulkAnalyzing={bulkAnalyzingHoldings}
+          bulkAnalyzeProgress={bulkAnalyzeProgress}
+          onRefresh={loadPortfolioRiskRadar}
+          onAnalyzeMissing={() => void handleAnalyzeMissingHoldings()}
+          onOpenDataCenter={() => navigate('/data-center')}
+        />
+      ) : portfolioRiskRadarWarning ? (
+        <InlineAlert
+          variant="warning"
+          title="持仓风险雷达暂不可用"
+          message={portfolioRiskRadarWarning}
+        />
+      ) : null}
+      {bulkAnalyzeFeedback ? (
+        <InlineAlert
+          variant={bulkAnalyzeFeedback.variant}
+          title="持仓分析补齐"
+          message={bulkAnalyzeFeedback.message}
+        />
+      ) : null}
+
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-3">
         <Card className="xl:col-span-2" padding="md">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-foreground">持仓明细</h2>
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">持仓明细</h2>
+              <p className="mt-1 text-xs text-secondary">点击股票或“回测分析”，会跳到首页自动生成最新分析。</p>
+            </div>
             <span className="text-xs text-secondary">共 {positionRows.length} 项</span>
           </div>
           {positionRows.length === 0 ? (
@@ -970,19 +1357,50 @@ const PortfolioPage: React.FC = () => {
                     <th className="text-right py-2 pr-2">现价</th>
                     <th className="text-right py-2 pr-2">市值</th>
                     <th className="text-right py-2">未实现盈亏</th>
+                    <th className="text-right py-2 pl-2">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   {positionRows.map((row) => (
                     <tr key={`${row.accountId}-${row.symbol}-${row.market}`} className="border-b border-white/5">
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
-                      <td className="py-2 pr-2 font-mono text-foreground">{row.symbol}</td>
+                      <td className="py-2 pr-2">
+                        <button
+                          type="button"
+                          className="group text-left"
+                          onClick={() => handleAnalyzePosition(row)}
+                          aria-label={`回测分析 ${row.symbolName || row.symbol}`}
+                        >
+                          <div className="text-foreground transition-colors group-hover:text-primary">{row.symbolName || row.symbol}</div>
+                          {row.symbolName ? <div className="font-mono text-xs text-secondary transition-colors group-hover:text-primary">{row.symbol}</div> : null}
+                        </button>
+                      </td>
                       <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
                       <td className="py-2 pr-2 text-right">{row.avgCost.toFixed(4)}</td>
-                      <td className="py-2 pr-2 text-right">{row.lastPrice.toFixed(4)}</td>
-                      <td className="py-2 pr-2 text-right">{formatMoney(row.marketValueBase, row.valuationCurrency)}</td>
-                      <td className={`py-2 text-right ${row.unrealizedPnlBase >= 0 ? 'text-success' : 'text-danger'}`}>
-                        {formatMoney(row.unrealizedPnlBase, row.valuationCurrency)}
+                      <td className="py-2 pr-2 text-right">
+                        <div>{formatPositionPrice(row)}</div>
+                        <div className={`text-[11px] ${hasPositionPrice(row) ? 'text-secondary' : 'text-warning'}`}>
+                          {getPositionPriceLabel(row)}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-2 text-right">{formatPositionMoney(row.marketValueBase, row)}</td>
+                      <td
+                        className={`py-2 text-right ${
+                          hasPositionPrice(row)
+                            ? getAsharePnlClass(row.unrealizedPnlBase)
+                            : 'text-secondary'
+                        }`}
+                      >
+                        {formatPositionMoney(row.unrealizedPnlBase, row)}
+                      </td>
+                      <td className="py-2 pl-2 text-right">
+                        <button
+                          type="button"
+                          className="btn-secondary !px-3 !py-1 !text-xs"
+                          onClick={() => handleAnalyzePosition(row)}
+                        >
+                          回测分析
+                        </button>
                       </td>
                     </tr>
                   ))}

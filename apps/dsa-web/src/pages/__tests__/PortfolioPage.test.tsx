@@ -2,6 +2,7 @@ import type React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApiError, createParsedApiError } from '../../api/error';
+import type { PortfolioPositionItem, PortfolioSnapshotResponse } from '../../types/portfolio';
 import PortfolioPage from '../PortfolioPage';
 
 const {
@@ -22,6 +23,9 @@ const {
   parseCsvImport,
   commitCsvImport,
   createAccount,
+  getPortfolioRiskRadar,
+  analyzeAsync,
+  navigateMock,
 } = vi.hoisted(() => ({
   getAccounts: vi.fn(),
   getSnapshot: vi.fn(),
@@ -40,7 +44,18 @@ const {
   parseCsvImport: vi.fn(),
   commitCsvImport: vi.fn(),
   createAccount: vi.fn(),
+  getPortfolioRiskRadar: vi.fn(),
+  analyzeAsync: vi.fn(),
+  navigateMock: vi.fn(),
 }));
+
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => navigateMock,
+  };
+});
 
 vi.mock('../../api/portfolio', () => ({
   portfolioApi: {
@@ -62,6 +77,30 @@ vi.mock('../../api/portfolio', () => ({
     commitCsvImport,
     createAccount,
   },
+}));
+
+vi.mock('../../api/dataCenter', () => ({
+  dataCenterApi: {
+    getPortfolioRiskRadar,
+  },
+}));
+
+vi.mock('../../api/analysis', async () => {
+  const actual = await vi.importActual<typeof import('../../api/analysis')>('../../api/analysis');
+  return {
+    ...actual,
+    analysisApi: {
+      analyzeAsync,
+    },
+  };
+});
+
+vi.mock('../../utils/stockIndexLoader', () => ({
+  loadStockIndex: vi.fn().mockResolvedValue({
+    data: [],
+    loaded: true,
+    fallback: false,
+  }),
 }));
 
 vi.mock('recharts', () => ({
@@ -96,7 +135,7 @@ function makeAccounts(items: AccountItem[] = [{ id: 1, name: 'Main' }]) {
   };
 }
 
-function makeSnapshot(options: { accountId?: number; fxStale?: boolean; accountCount?: number } = {}) {
+function makeSnapshot(options: { accountId?: number; fxStale?: boolean; accountCount?: number } = {}): PortfolioSnapshotResponse {
   const accountId = options.accountId ?? 1;
   return {
     asOf: '2026-03-19',
@@ -129,7 +168,7 @@ function makeSnapshot(options: { accountId?: number; fxStale?: boolean; accountC
         feeTotal: 0,
         taxTotal: 0,
         fxStale: options.fxStale ?? true,
-        positions: [],
+        positions: [] as PortfolioPositionItem[],
       },
     ],
   };
@@ -192,6 +231,7 @@ async function waitForInitialLoad() {
 describe('PortfolioPage FX refresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    navigateMock.mockReset();
 
     getAccounts.mockResolvedValue(makeAccounts());
     getSnapshot.mockImplementation(async ({ accountId }: { accountId?: number } = {}) => makeSnapshot({ accountId, fxStale: true }));
@@ -229,6 +269,15 @@ describe('PortfolioPage FX refresh', () => {
       errors: [],
     });
     createAccount.mockResolvedValue({ id: 1 });
+    getPortfolioRiskRadar.mockResolvedValue({
+      generatedAt: '2026-04-28T22:10:00',
+      holdingCount: 0,
+      items: [],
+    });
+    analyzeAsync.mockResolvedValue({
+      taskId: 'task-1',
+      status: 'pending',
+    });
   });
 
   it('renders stale FX status with a manual refresh button', async () => {
@@ -238,6 +287,170 @@ describe('PortfolioPage FX refresh', () => {
 
     expect(await screen.findByText('过期')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '刷新汇率' })).toBeInTheDocument();
+  });
+
+  it('opens the home page auto-analysis flow when clicking a holding stock', async () => {
+    const snapshotWithPosition = makeSnapshot({ fxStale: true });
+    snapshotWithPosition.accounts[0].positions = [
+      {
+        symbol: '159326',
+        market: 'cn',
+        currency: 'CNY',
+        quantity: 100,
+        avgCost: 1.25,
+        totalCost: 125,
+        lastPrice: 1.3,
+        marketValueBase: 130,
+        unrealizedPnlBase: 5,
+        valuationCurrency: 'CNY',
+      },
+    ];
+    getSnapshot.mockResolvedValue(snapshotWithPosition);
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    fireEvent.click(await screen.findByRole('button', { name: '回测分析 电网设备' }));
+
+    expect(navigateMock).toHaveBeenCalledWith('/?analyze=159326&source=portfolio&force=1&name=%E7%94%B5%E7%BD%91%E8%AE%BE%E5%A4%87');
+  });
+
+  it('shows the portfolio risk radar on the holding page', async () => {
+    getPortfolioRiskRadar.mockResolvedValue({
+      generatedAt: '2026-04-28T22:10:00',
+      holdingCount: 2,
+      items: [
+        {
+          code: '600519',
+          quantity: 100,
+          marketValueBase: 10000,
+          updatedAt: '2026-04-28T22:00:00',
+          tone: 'strong',
+          label: '优先关注',
+          title: '600519：历史表现较好',
+          message: '已有回测结果偏正向，可作为重点持仓继续跟踪。',
+          totalEvaluations: 3,
+          completedCount: 3,
+          insufficientCount: 0,
+          winRatePct: 66.67,
+          avgSimulatedReturnPct: 5.2,
+          summary: null,
+        },
+        {
+          code: '000001',
+          quantity: 200,
+          marketValueBase: 5000,
+          updatedAt: '2026-04-28T22:00:00',
+          tone: 'empty',
+          label: '待成熟',
+          title: '000001：已有分析但回测未成熟',
+          message: '这只持仓已有历史分析记录，但后续行情时间或数据还不够，暂时不能计算胜率和收益。',
+          totalEvaluations: 1,
+          completedCount: 0,
+          insufficientCount: 1,
+          winRatePct: null,
+          avgSimulatedReturnPct: null,
+          summary: null,
+        },
+      ],
+    });
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    expect(await screen.findByText('持仓风险雷达')).toBeInTheDocument();
+    expect(screen.getByText('600519：历史表现较好')).toBeInTheDocument();
+    expect(screen.getByText('优先关注')).toBeInTheDocument();
+    expect(screen.getByText('分析 3')).toBeInTheDocument();
+    expect(screen.getByText('成熟样本 3')).toBeInTheDocument();
+    expect(screen.getByText('000001：已有分析但回测未成熟')).toBeInTheDocument();
+    expect(screen.getByText('待成熟')).toBeInTheDocument();
+    expect(screen.getByText('未成熟样本 1')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('去数据页回测'));
+    expect(navigateMock).toHaveBeenCalledWith('/data-center');
+  });
+
+  it('submits missing holding analyses from the risk radar', async () => {
+    getPortfolioRiskRadar.mockResolvedValue({
+      generatedAt: '2026-04-28T22:10:00',
+      holdingCount: 2,
+      items: [
+        {
+          code: '600519',
+          quantity: 100,
+          marketValueBase: 10000,
+          updatedAt: '2026-04-28T22:00:00',
+          tone: 'strong',
+          label: '优先关注',
+          title: '600519：历史表现较好',
+          message: '已有回测结果偏正向，可作为重点持仓继续跟踪。',
+          totalEvaluations: 3,
+          completedCount: 3,
+          insufficientCount: 0,
+          winRatePct: 66.67,
+          avgSimulatedReturnPct: 5.2,
+          summary: null,
+        },
+        {
+          code: '000001',
+          quantity: 200,
+          marketValueBase: 5000,
+          updatedAt: '2026-04-28T22:00:00',
+          tone: 'empty',
+          label: '先分析',
+          title: '000001：暂无历史分析',
+          message: '这只持仓还没有可用于回测的历史分析记录，先做几次分析后再看雷达更有意义。',
+          totalEvaluations: 0,
+          completedCount: 0,
+          insufficientCount: 0,
+          winRatePct: null,
+          avgSimulatedReturnPct: null,
+          summary: null,
+        },
+      ],
+    });
+
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+
+    fireEvent.click(await screen.findByRole('button', { name: '一键补齐 1 只分析' }));
+
+    await waitFor(() => {
+      expect(analyzeAsync).toHaveBeenCalledTimes(1);
+    });
+    expect(analyzeAsync).toHaveBeenCalledWith(expect.objectContaining({
+      stockCode: '000001',
+      originalQuery: '000001',
+      selectionSource: 'portfolio',
+      notify: false,
+    }));
+    expect(await screen.findByText(/已提交 1 只持仓分析/)).toBeInTheDocument();
+  });
+
+  it('refreshes the portfolio risk radar when returning to the holding page', async () => {
+    render(<PortfolioPage />);
+
+    await waitForInitialLoad();
+    await waitFor(() => expect(getPortfolioRiskRadar).toHaveBeenCalledTimes(1));
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'hidden',
+    });
+    fireEvent(document, new Event('visibilitychange'));
+    expect(getPortfolioRiskRadar).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    fireEvent(document, new Event('visibilitychange'));
+
+    await waitFor(() => expect(getPortfolioRiskRadar).toHaveBeenCalledTimes(2));
   });
 
   it('refreshes FX for a single selected account and only reloads snapshot/risk', async () => {

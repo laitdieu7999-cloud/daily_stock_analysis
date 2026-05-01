@@ -25,7 +25,7 @@ import pandas as pd
 from src.config import get_config, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
-from data_provider.base import normalize_stock_code
+from data_provider.base import canonical_stock_code, normalize_stock_code
 from data_provider.realtime_types import ChipDistribution
 from src.analyzer import GeminiAnalyzer, AnalysisResult, fill_chip_structure_if_needed, fill_price_position_if_needed
 from src.data.stock_mapping import STOCK_NAME_MAP
@@ -75,6 +75,7 @@ class StockAnalysisPipeline:
         query_source: Optional[str] = None,
         save_context_snapshot: Optional[bool] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        local_report_filename: Optional[str] = None,
     ):
         """
         初始化调度器
@@ -92,6 +93,7 @@ class StockAnalysisPipeline:
             self.config.save_context_snapshot if save_context_snapshot is None else save_context_snapshot
         )
         self.progress_callback = progress_callback
+        self.local_report_filename = local_report_filename
         
         # 初始化各模块
         self.db = get_db()
@@ -596,10 +598,20 @@ class StockAnalysisPipeline:
                 'trend_status': trend_result.trend_status.value,
                 'ma_alignment': trend_result.ma_alignment,
                 'trend_strength': trend_result.trend_strength,
+                'current_price': trend_result.current_price,
+                'ma5': trend_result.ma5,
+                'ma10': trend_result.ma10,
+                'ma20': trend_result.ma20,
+                'ma60': trend_result.ma60,
                 'bias_ma5': trend_result.bias_ma5,
                 'bias_ma10': trend_result.bias_ma10,
+                'bias_ma20': trend_result.bias_ma20,
                 'volume_status': trend_result.volume_status.value,
                 'volume_trend': trend_result.volume_trend,
+                'support_ma5': trend_result.support_ma5,
+                'support_ma10': trend_result.support_ma10,
+                'support_levels': trend_result.support_levels,
+                'resistance_levels': trend_result.resistance_levels,
                 'buy_signal': trend_result.buy_signal.value,
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
@@ -633,6 +645,38 @@ class StockAnalysisPipeline:
                 'rsrs_r2': trend_result.rsrs_r2,
                 'rsrs_status': trend_result.rsrs_status.value,
                 'rsrs_signal': trend_result.rsrs_signal,
+                # 扩展指标：趋势强度、资金流、突破与过热过滤
+                'adx_14': trend_result.adx_14,
+                'plus_di_14': trend_result.plus_di_14,
+                'minus_di_14': trend_result.minus_di_14,
+                'adx_signal': trend_result.adx_signal,
+                'mfi_14': trend_result.mfi_14,
+                'mfi_signal': trend_result.mfi_signal,
+                'cci_20': trend_result.cci_20,
+                'cci_signal': trend_result.cci_signal,
+                'roc_12': trend_result.roc_12,
+                'roc_signal': trend_result.roc_signal,
+                'donchian_upper_20': trend_result.donchian_upper_20,
+                'donchian_lower_20': trend_result.donchian_lower_20,
+                'donchian_mid_20': trend_result.donchian_mid_20,
+                'donchian_signal': trend_result.donchian_signal,
+                'williams_r_14': trend_result.williams_r_14,
+                'williams_signal': trend_result.williams_signal,
+                'stoch_rsi_14': trend_result.stoch_rsi_14,
+                'stoch_rsi_signal': trend_result.stoch_rsi_signal,
+                'cmf_20': trend_result.cmf_20,
+                'cmf_signal': trend_result.cmf_signal,
+                'vwap_20': trend_result.vwap_20,
+                'vwap_distance_pct': trend_result.vwap_distance_pct,
+                'vwap_signal': trend_result.vwap_signal,
+                # 多指标共振摘要：辅助解释，不直接覆盖系统评分
+                'indicator_consensus_score': trend_result.indicator_consensus_score,
+                'indicator_consensus_signal': trend_result.indicator_consensus_signal,
+                'indicator_bullish_count': trend_result.indicator_bullish_count,
+                'indicator_bearish_count': trend_result.indicator_bearish_count,
+                'indicator_neutral_count': trend_result.indicator_neutral_count,
+                'indicator_conflict_level': trend_result.indicator_conflict_level,
+                'indicator_consensus_details': trend_result.indicator_consensus_details,
             }
 
         # Issue #234: Override today with realtime OHLC + trend MA for intraday analysis
@@ -705,6 +749,10 @@ class StockAnalysisPipeline:
             context.get('code', ''), enhanced.get('stock_name', stock_name)
         )
 
+        portfolio_position = self._build_portfolio_position_context(context.get("code", ""))
+        if portfolio_position:
+            enhanced["portfolio_position"] = portfolio_position
+
         # P0: append unified fundamental block; keep as additional context only
         enhanced["fundamental_context"] = (
             fundamental_context
@@ -716,6 +764,124 @@ class StockAnalysisPipeline:
         )
 
         return enhanced
+
+    @staticmethod
+    def _portfolio_symbol_key(code: Any) -> str:
+        """Normalize portfolio and analysis symbols to the same matching key."""
+        return normalize_stock_code(canonical_stock_code(str(code or ""))).upper()
+
+    @staticmethod
+    def _safe_number(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _round_optional(value: Any, digits: int = 4) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return round(float(value), digits)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_portfolio_position_context(self, code: str) -> Optional[Dict[str, Any]]:
+        """
+        Build a compact current-holding context for the analyzed stock.
+
+        This is intentionally fail-open: portfolio data should improve the
+        report when available, but must never block stock analysis.
+        """
+        target_key = self._portfolio_symbol_key(code)
+        if not target_key:
+            return None
+
+        try:
+            from src.services.portfolio_service import PortfolioService
+
+            snapshot = PortfolioService().get_portfolio_snapshot(cost_method="fifo")
+        except Exception as exc:
+            logger.debug("[%s] portfolio context unavailable: %s", code, exc)
+            return None
+
+        matched_accounts: List[Dict[str, Any]] = []
+        total_quantity = 0.0
+        total_market_value = 0.0
+        total_cost_basis = 0.0
+        total_unrealized_pnl = 0.0
+        latest_price: Optional[float] = None
+        currency = str(snapshot.get("currency") or "CNY")
+
+        for account in snapshot.get("accounts") or []:
+            if not isinstance(account, dict):
+                continue
+            for position in account.get("positions") or []:
+                if not isinstance(position, dict):
+                    continue
+                if self._portfolio_symbol_key(position.get("symbol")) != target_key:
+                    continue
+
+                quantity = self._safe_number(position.get("quantity"))
+                market_value = self._safe_number(position.get("market_value_base"))
+                unrealized_pnl = self._safe_number(position.get("unrealized_pnl_base"))
+                cost_basis = market_value - unrealized_pnl
+                pnl_pct = (unrealized_pnl / cost_basis * 100) if cost_basis > 0 else None
+                last_price = self._safe_number(position.get("last_price"))
+                if last_price > 0:
+                    latest_price = last_price
+
+                total_quantity += quantity
+                total_market_value += market_value
+                total_cost_basis += cost_basis
+                total_unrealized_pnl += unrealized_pnl
+                matched_accounts.append(
+                    {
+                        "account_id": account.get("account_id"),
+                        "account_name": account.get("account_name"),
+                        "quantity": self._round_optional(quantity, 4),
+                        "avg_cost": self._round_optional(position.get("avg_cost"), 4),
+                        "last_price": self._round_optional(last_price, 4) if last_price > 0 else None,
+                        "market_value": self._round_optional(market_value, 2),
+                        "unrealized_pnl": self._round_optional(unrealized_pnl, 2),
+                        "unrealized_pnl_pct": self._round_optional(pnl_pct, 2),
+                        "valuation_currency": position.get("valuation_currency") or account.get("base_currency") or currency,
+                    }
+                )
+
+        if not matched_accounts or total_quantity <= 0:
+            return None
+
+        total_equity = self._safe_number(snapshot.get("total_equity"))
+        total_position_weight = (
+            total_market_value / total_equity * 100
+            if total_equity > 0
+            else None
+        )
+        total_pnl_pct = (
+            total_unrealized_pnl / total_cost_basis * 100
+            if total_cost_basis > 0
+            else None
+        )
+        avg_cost = total_cost_basis / total_quantity if total_quantity > 0 else None
+
+        return {
+            "has_position": True,
+            "as_of": snapshot.get("as_of"),
+            "cost_method": snapshot.get("cost_method"),
+            "currency": currency,
+            "stock_code": target_key,
+            "account_count": len(matched_accounts),
+            "quantity": self._round_optional(total_quantity, 4),
+            "avg_cost": self._round_optional(avg_cost, 4),
+            "last_price": self._round_optional(latest_price, 4),
+            "cost_basis": self._round_optional(total_cost_basis, 2),
+            "market_value": self._round_optional(total_market_value, 2),
+            "unrealized_pnl": self._round_optional(total_unrealized_pnl, 2),
+            "unrealized_pnl_pct": self._round_optional(total_pnl_pct, 2),
+            "weight_pct": self._round_optional(total_position_weight, 2),
+            "accounts": matched_accounts,
+        }
 
     def _attach_belong_boards_to_fundamental_context(
         self,
@@ -824,6 +990,9 @@ class StockAnalysisPipeline:
                 initial_context["chip_distribution"] = self._safe_to_dict(chip_data)
             if trend_result:
                 initial_context["trend_result"] = self._safe_to_dict(trend_result)
+            portfolio_position = self._build_portfolio_position_context(code)
+            if portfolio_position:
+                initial_context["portfolio_position"] = portfolio_position
 
             # Agent path: inject social sentiment as news_context so both
             # executor (_build_user_message) and orchestrator (ctx.set_data)
@@ -851,7 +1020,14 @@ class StockAnalysisPipeline:
             agent_result = executor.run(message, context=initial_context)
 
             # 转换为 AnalysisResult
-            result = self._agent_result_to_analysis_result(agent_result, code, stock_name, report_type, query_id)
+            result = self._agent_result_to_analysis_result(
+                agent_result,
+                code,
+                stock_name,
+                report_type,
+                query_id,
+                trend_result=trend_result,
+            )
             if result:
                 result.query_id = query_id
             # Agent weak integrity: placeholder fill only, no LLM retry
@@ -921,7 +1097,13 @@ class StockAnalysisPipeline:
             return None
 
     def _agent_result_to_analysis_result(
-        self, agent_result, code: str, stock_name: str, report_type: ReportType, query_id: str
+        self,
+        agent_result,
+        code: str,
+        stock_name: str,
+        report_type: ReportType,
+        query_id: str,
+        trend_result: Optional[TrendAnalysisResult] = None,
     ) -> AnalysisResult:
         """
         将 AgentResult 转换为 AnalysisResult。
@@ -981,12 +1163,56 @@ class StockAnalysisPipeline:
             # structure, so we unwrap it here.
             result.dashboard = dash.get("dashboard") or dash
         else:
-            result.sentiment_score = 50
-            result.operation_advice = "Watch" if report_language == "en" else "观望"
+            self._apply_trend_fallback(result, trend_result, report_language)
             if not result.error_message:
                 result.error_message = "Agent failed to generate a valid decision dashboard" if report_language == "en" else "Agent 未能生成有效的决策仪表盘"
 
         return result
+
+    @staticmethod
+    def _apply_trend_fallback(
+        result: AnalysisResult,
+        trend_result: Optional[TrendAnalysisResult],
+        report_language: str,
+    ) -> None:
+        if trend_result is None:
+            result.sentiment_score = 50
+            result.operation_advice = "Watch" if report_language == "en" else "观望"
+            return
+
+        score = getattr(trend_result, "signal_score", None)
+        try:
+            numeric_score = int(score)
+        except (TypeError, ValueError):
+            numeric_score = 50
+        result.sentiment_score = numeric_score if numeric_score > 0 else 50
+
+        trend_status = getattr(trend_result, "trend_status", None)
+        trend_label = getattr(trend_status, "value", None) or str(trend_status or "").strip()
+        if trend_label:
+            result.trend_prediction = trend_label
+
+        buy_signal = getattr(trend_result, "buy_signal", None)
+        signal_label = getattr(buy_signal, "value", None) or str(buy_signal or "").strip()
+        if signal_label:
+            result.operation_advice = signal_label
+        else:
+            result.operation_advice = "Watch" if report_language == "en" else "观望"
+
+        from src.agent.protocols import normalize_decision_signal
+
+        signal_name = getattr(buy_signal, "name", "").lower()
+        signal_to_decision = {
+            "strong_buy": "buy",
+            "buy": "buy",
+            "hold": "hold",
+            "wait": "hold",
+            "sell": "sell",
+            "strong_sell": "sell",
+        }
+        result.decision_type = signal_to_decision.get(signal_name, result.decision_type or "hold")
+        result.decision_type = normalize_decision_signal(result.decision_type)
+        result.data_sources = f"{result.data_sources},trend:fallback" if result.data_sources else "trend:fallback"
 
     @staticmethod
     def _is_placeholder_stock_name(name: str, code: str) -> bool:
@@ -1388,6 +1614,7 @@ class StockAnalysisPipeline:
             )
         
         results: List[AnalysisResult] = []
+        report_results: List[AnalysisResult] = []
         
         # 使用线程池并发处理
         # 注意：max_workers 设置较低（默认3）以避免触发反爬
@@ -1411,6 +1638,9 @@ class StockAnalysisPipeline:
                 code = future_to_code[future]
                 try:
                     result = future.result()
+                    if result:
+                        report_results.append(result)
+
                     if result and result.success:
                         results.append(result)
                         if single_stock_notify and send_notification and not dry_run:
@@ -1424,6 +1654,13 @@ class StockAnalysisPipeline:
                             f"[{code}] 分析结果标记为失败，不计入汇总: "
                             f"{result.error_message or '未知原因'}"
                         )
+                    elif result is None:
+                        failed_result = self._build_failed_report_result(
+                            code,
+                            "分析流程未返回结果",
+                        )
+                        report_results.append(failed_result)
+                        logger.warning("[%s] 分析结果为空，已写入本地报告异常块", code)
 
                     # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
                     if idx < len(stock_codes) - 1 and analysis_delay > 0:
@@ -1436,6 +1673,12 @@ class StockAnalysisPipeline:
 
                 except Exception as e:
                     logger.error(f"[{code}] 任务执行失败: {e}")
+                    report_results.append(
+                        self._build_failed_report_result(
+                            code,
+                            f"任务执行失败: {e}",
+                        )
+                    )
         
         # 统计
         elapsed_time = time.time() - start_time
@@ -1462,8 +1705,8 @@ class StockAnalysisPipeline:
         logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
         
         # 保存报告到本地文件（无论是否推送通知都保存）
-        if results and not dry_run:
-            self._save_local_report(results, report_type)
+        if report_results and not dry_run:
+            self._save_local_report(report_results, report_type)
 
         # 发送通知（单股推送模式下跳过汇总推送，避免重复）
         if results and send_notification and not dry_run:
@@ -1479,6 +1722,33 @@ class StockAnalysisPipeline:
                 self._send_notifications(results, report_type)
         
         return results
+
+    def _build_failed_report_result(
+        self,
+        code: str,
+        error_message: str,
+    ) -> AnalysisResult:
+        """Build a lightweight failed result so local reports preserve full stock coverage."""
+        stock_name = STOCK_NAME_MAP.get(code, code)
+        try:
+            stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False) or stock_name
+        except Exception:
+            pass
+
+        return AnalysisResult(
+            code=code,
+            name=stock_name,
+            sentiment_score=0,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            decision_type="hold",
+            confidence_level=localize_confidence_level("低", normalize_report_language(getattr(self.config, "report_language", "zh"))),
+            report_language=normalize_report_language(getattr(self.config, "report_language", "zh")),
+            analysis_summary="本轮未生成有效分析结果，详见异常信息。",
+            risk_warning=error_message,
+            success=False,
+            error_message=error_message,
+        )
 
     def _send_single_stock_notification(
         self,
@@ -1526,7 +1796,10 @@ class StockAnalysisPipeline:
         """保存分析报告到本地文件（与通知推送解耦）"""
         try:
             report = self._generate_aggregate_report(results, report_type)
-            filepath = self.notifier.save_report_to_file(report)
+            filepath = self.notifier.save_report_to_file(
+                report,
+                filename=self.local_report_filename,
+            )
             logger.info(f"决策仪表盘日报已保存: {filepath}")
         except Exception as e:
             logger.error(f"保存本地报告失败: {e}")

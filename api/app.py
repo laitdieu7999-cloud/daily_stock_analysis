@@ -113,11 +113,17 @@ from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.services.system_config_service import SystemConfigService
+from src.storage import DatabaseManager
 
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
+    # Initialize the shared DB singleton before the first request can fan out
+    # into history/portfolio endpoints. Without this, the desktop app can race
+    # its initial UI requests against lazy DB setup and log a spurious
+    # "DatabaseManager 未正确初始化" on first paint.
+    DatabaseManager.get_instance()
     app.state.system_config_service = SystemConfigService()
     try:
         yield
@@ -305,8 +311,11 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
                     content={"error": "not_found", "message": f"API endpoint /{full_path} not found"}
                 )
             
-            file_path = static_dir / full_path
-            if file_path.exists() and file_path.is_file():
+            # Reuse the same containment check as /assets/* so that encoded
+            # parent-directory segments cannot escape static_dir via the SPA
+            # fallback route.
+            file_path = _resolve_asset_path(static_dir, full_path) if full_path else None
+            if file_path is not None and file_path.is_file():
                 # Issue #520: Explicitly resolve MIME type to avoid
                 # browsers rejecting JS modules served as text/plain.
                 content_type, _ = mimetypes.guess_type(str(file_path))

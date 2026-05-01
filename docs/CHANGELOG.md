@@ -12,42 +12,172 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
-- [修复] 大盘复盘链路接入 `REPORT_LANGUAGE`：`REPORT_LANGUAGE=en` 时，A 股/合并复盘的 Prompt、章节标题、模板兜底文案与通知包装标题统一改为英文，避免出现英文正文外包中文标题的问题。
+- [改进] 玄学模型自动治理链补齐生命周期与切换治理：新增 governance/stage-performance/lifecycle/version-switch 四类长期账本，主日报可显示阶段健康、生命周期动作与切换草案；`scripts/evaluate_metaphysical_promotion.py` 现可直接输出 switch proposal、execution plan、confirmation draft 与 change request template，周自动化也同步升级为“评估 -> 草案 -> 待确认变更单”口径。
+- [改进] 新增固定周报入口 `scripts/generate_metaphysical_weekly_summary.py`，可直接从 learning / governance / lifecycle / stage performance / switch proposal 等账本生成一页“玄学模型周治理摘要”，用于周日自动化和人工周审。
+- [改进] 玄学治理信息已从主日报 `今日结论` 中摘出，新增独立日报入口 `scripts/generate_metaphysical_daily_report.py`，专门输出模型信号、治理动作、生命周期、阶段健康、切换草案、确认稿与变更单，方便与主市场日报分开查看。
+- [改进] 独立玄学治理日报现已接入主日报生成链：每天会额外保存到桌面目录 `~/Desktop/玄学治理日报`，桌面仅保留最近 3 天，后台长期归档保留在 `reports/metaphysical_daily_archive/` 不删除。
+- [新功能] 玄学研究层新增动态 `Regime-aware` 标准路径：补齐 `regime.py`、`attach_next_production_metaphysical_features()`、`finalize_next_production_candidate_frame()`、`build_next_production_backtest_features()` 与最小训练示例脚本 `scripts/train_next_production_metaphysical_example.py`，统一下一版候选层的训练/回测接入方式。
+- [改进] 新增 `model_defaults.py` 与 `NEXT_PRODUCTION_MODEL_DEFAULTS`，将下一版玄学模型驱动回测的当前默认参数正式收口为共享常量；`scripts/backtest_next_production_metaphysical_model.py` 现已默认使用 `min_train_days=756`、`retrain_every=42`、`caution_threshold=0.40`、`risk_off_threshold=0.60`，并支持滚动概率缓存以加速后续阈值/训练节奏扫描。
+- [改进] 新增 `custom_assets.manifest.json`、`scripts/backup_custom_assets.py` 与手动工作流 `Custom Assets Backup`，支持将本地自定义理论、策略和扩展代码单独打包备份，在重拉上游仓库后先用 `restore --dry-run` 输出冲突清单再决定是否回灌，也可从 GitHub artifact 下载云端备份。
 - [改进] `scripts/check_upstream_updates.py` 更新检查流程支持按目录批量扫描仓库、优先识别跟踪分支、输出 JSON 摘要并可在检测到待同步更新时返回自动化友好的失败码；新增 GitHub Actions 定时检查上游主仓更新并自动同步跟踪 issue。
-- [修复] `EfinanceFetcher.get_main_indices()` 对东方财富指数实时行情的开盘价映射改为兼容 `今开 -> 开盘 -> open`，修复部分 `efinance` 版本下指数开盘价被读成缺失值的问题（fixes #1043）
-- [修复] `AGENT_MAX_STEPS` 在 orchestrator 多 Agent 模式下统一明确为“默认作为各子 Agent 的步数上限而非硬覆盖；TechnicalAgent 等高默认值 Agent 会被封顶、低默认值 Agent 保持原值；当用户主动调高（>10）时，再统一覆盖所有子 Agent 采用全局值”，同时修复用户设置 12 但 TechnicalAgent 仍以默认 6 步运行并报 "Agent exceeded max steps" 的问题（fixes #1026）
-- [修复] Specialist（Skill）Agent 失败不再中断整个分析管线，改为与 intel/risk 相同的优雅降级策略
-- [改进] Agent 超步数错误信息增加 AGENT_MAX_STEPS 调整提示，帮助用户自助排查
-- [修复] **MiniMax-M2.7 模型连接测试支持** — 修复 LLM 通道连接测试在 MiniMax-M2.7 模型下返回 "Empty response" 的问题；增加了 `max_tokens` 上限（8→256）以容纳 MiniMax 思考过程，并添加 `content_blocks` 格式解析逻辑统一处理 MiniMax 响应格式差异。
-- [修复] 移除 `HistoryItem` 与 `ReportSummary` 响应 Schema 中 `sentiment_score` 的 `ge=0/le=100` 约束（fixes #942）——历史库中存储的超范围负值或大于 100 的情绪评分不再触发 Pydantic ValidationError，历史列表与详情接口恢复正常返回。
-- [改进] 后端股票名称解析改为优先复用前端 `stocks.index.json` 全量索引并懒加载缓存；纯后端/缺失静态资源场景静默降级回 `STOCK_NAME_MAP` 与原有数据源回退链路。
-- [改进] Agent IntelAgent 新增公司公告搜索维度（上交所/深交所/cninfo）与主力资金流工具（get_capital_flow），修复 Agent 模式下公告和资金流数据经常缺失的问题
-- [修复] webui_frontend.py 在 static/index.html 存在但 static/assets/ 缺失时发出明确警告，避免用户因 CSS/JS 资源缺失导致页面元素异常变大却无从排查
-- [修复] `StockAnalysisPipeline` 搜索服务与社交舆情服务改为可选降级初始化：任一服务初始化异常时记录 warning 并以禁用状态继续运行，避免外部依赖抖动阻塞主分析链路与 SSE 进度回调。
-- [文档] DEPLOY.md 和 deploy-webui-cloud.md 新增"UI 元素异常变大/布局错乱"排查步骤（重建 Docker 镜像或手动执行 npm run build）
-- [文档] 补充飞书 Webhook 配置说明：强调 `FEISHU_WEBHOOK_URL` 是群通知必填项、`FEISHU_WEBHOOK_SECRET` 与飞书机器人「签名校验」必须两端同时启用或同时关闭、`FEISHU_APP_SECRET` 仅用于应用/Stream Bot 模式不可替代 Webhook；同步完善英文指南并在 `.env.example` 为相关配置项补充内联说明注释
-- [修复] 桌面端版本展示改为统一读取 `apps/dsa-desktop/package.json`：移除 preload 中硬编码的 `0.1.0`，并在设置页展示真实桌面端版本，避免开发态与打包态长期显示错误版本号。
+- [新功能] Web 首页历史报告区新增重新分析入口，支持基于原始 prompt 重做同一只股票同日期的分析。
+- [新功能] Windows/macOS 桌面端新增 GitHub Release 更新提醒，启动后自动检测新版本并支持从设置页手动检查后跳转下载页。
+- [修复] Pipeline Agent 5 个 K 线工具改为 DB-first 加载，并在执行前按需预热 240 天历史数据，减少同一只股票重复 HTTP 请求。
+- [修复] 冻结 `target_date` 通过 `ContextVar` 透传到 Pipeline Agent K 线工具线程，消除跨收盘边界时间漂移。
+- [修复] 修复 Windows 桌面端转抄后端 stdout/stderr 时中文日志可能乱码的问题，统一优先使用 UTF-8 并兼容本地代码页回退。
+- [改进] Docker 发布工作流收敛为更清晰的正式发布与手动补发链路，并统一官方 Docker Hub 镜像名为 `zhulinsen/daily_stock_analysis`。
+- [改进] Agent 日线工具优先复用本地缓存，并持久化新获取的日线与新闻情报。
+- [修复] GitHub Actions 每日分析工作流补齐 `LLM_CHANNELS`、多 Key 与常用 `LLM_<NAME>_*` 渠道变量透传，避免本地可用的多模型配置在云端定时任务中失效（fixes #1063, #872）。
+- [文档] 修正飞书自定义机器人 Webhook interactive card 示例，并补充飞书自动化 Webhook 触发器配置教程。
+- [修复] 历史报告详情接口修正 `change_pct` 取值，避免把 `0.0`（平盘）当作缺失值丢弃（fixes #1084）。
 
-- [新功能] 集成 Longbridge OpenAPI 作为美股/港股可选数据源；配置 `LONGBRIDGE_*` 后优先使用长桥获取日线与实时行情，YFinance / AkShare 兜底；未配置时行为与此前一致。长桥联调请使用 `tests/longbridge_live_smoke.py`（手动脚本，不参与 pytest 收集）。
-- [文档] 澄清 README（中/英/繁）中长桥「首选 / 兜底 / 未配置不调用」的边界；`docs/README_EN.md` / `docs/README_CHT.md` 顶部导航与完整指南链接改为 `./` 相对路径，避免在文档子目录下解析错误；`LONGBRIDGE_PRINT_QUOTE_PACKAGES` 与代码及 `.env.example` 对齐为未设置时默认关闭。
-- [修复] 港股名称获取失败问题 — 修复当主数据源字段缺失时无法正确回退到备用字段获取港股名称的问题（fixes #940）
-- [修复] SSE 任务流断开时 CancelledError 被静默吞掉问题 — 修复 SSE 流中断时异常未向上抛出导致故障无日志可查的问题，现在正确 re-raise CancelledError（fixes #967）
-- [修复] Agent SSE 流清理阶段静默吞掉后台执行器异常 — 流结束时后台任务异常现在正确记录并上报，避免错误无法感知（fixes #969）
-- [文档] FAQ 补充 Ollama `OllamaException / APIConnectionError` 连接失败排障条目（Q12c），覆盖服务未启动、URL 配置错误、模型前缀缺失、模型未下载、远程防火墙等 5 个检查点
-- [修复] 技能加载异常被静默吞没问题 — 在 ask.py、skills/aggregator.py、skills/router.py 的静默 except 块补充 logger.warning 日志，确保技能列表为空时有日志可查（fixes #970）
-- [修复] SQLite 主写入链路现在对 `stock_daily(code,date)` 使用批量原子 upsert，并在文件型 SQLite 连接上默认启用 `WAL`、`busy_timeout` 与有限写入重试，降低批量分析和并发回写场景下的锁竞争与吞吐抖动，返回值中的“新增数”改为按本次真正插入窗口计算（并发场景不再把并行写入行误算入当前调用）。
-- [修复] 优化多 Agent 与单 Agent 的预算护栏语义：当后续阶段/步骤剩余预算低于最小阈值（首阶段除外）时会主动跳过并进行降级处理；若当前已完成阶段可支持构建降级报告，则返回 `success=True` 并携带非空内容；否则返回 `success=False`、`content=""`；`run_agent_loop` 预算过低时当前仍返回失败降级语义（`success=False`、`content=""`），`AgentExecutor` 保持统一下游契约。
+## [3.14.2] - 2026-04-30
 
+### 发布亮点
 
-- [新功能] tushare支持港股查询 — 配置了tushare凭证的用户会调用hk_daily接口获取数据，如果用户tushare权限不够依然会出现数据查询异常的情况，和改造前直接抛出不支持的异常流程相同。
-- [改进] TushareFetcher `get_chip_distribution` 对港股直接返回 `None`，不调用 `cyq_chips`（港股暂不支持筹码分布）。
-- [测试] 补充 `get_chip_distribution` 获取筹码分布的单元测试。
-- [改进] TushareFetcher `_normalize_data` 对港股（`hk_daily`）不再对 `vol`/`amount` 做 A 股手→股、千元→元 的缩放，与 Tushare 港股字段语义一致。
-- [测试] 补充 `TushareFetcher._normalize_data` 港股与 A 股/ETF 单位处理的单元测试。
-- [新功能] 集成 Anspire Search 作为可选语义搜索后端; 配置 `ANSPIRE_*` 可使用Anspire Search获取实时行情及新闻资讯，未配置时行为与此前一致。Anspire Search请使用 `tests/test_anspire_search.py`（手动脚本）。
-- [修复] GitHub Actions `daily_analysis.yml` 未注入 `REPORT_LANGUAGE` 环境变量，导致用户在 Secrets/Variables 中配置后不生效（fixes #1013）
-- [修复] `GET /api/v1/analysis/status/{task_id}` 从数据库回填已完成任务时缺少 `current_price` / `change_pct`，导致首页报告股票名旁不显示实时价格（fixes #983）
-- [修复] 修复非交易日（周末/节假日）筹码分布与板块排行返回倒数第二个交易日数据的问题现在正常返回最近交易日数据（fix #1009）
+- 大盘复盘扩展到港股，并让 Bot `/market` 与 CLI/调度入口使用一致的交易日过滤语义。
+- 问股与 Agent 链路增强配置缺失、决策 fallback 和多策略选择体验。
+- LLM 与分析报告链路提升稳定性：非法 JSON 响应会继续尝试备用模型，LiteLLM DEBUG 日志默认降噪。
+- 新增只读首次启动配置状态接口，为后续配置向导和 smoke run 奠定基础。
+
+### 新功能
+
+- 大盘复盘支持港股市场：`MARKET_REVIEW_REGION` 新增 `hk` 选项；`both` 扩展为 A股+港股+美股，并新增港股指数复盘链路。
+- 新增只读首次启动配置状态接口 `GET /api/v1/system/config/setup/status`，用于识别 LLM、Agent、自选股、通知和本地存储配置缺口；该接口不会重载运行时、写入 `.env` 或创建数据库文件。
+
+### 改进
+
+- 问股页面支持组合选择多个 Agent 策略。
+- 大盘复盘与 Bot 市场命令统一交易日过滤语义，可按当天开市市场计算有效区域。
+
+### 修复
+
+- 问股 Agent 在未配置可用 LLM 时保留后端真实错误原因并维持失败语义，避免前端把配置缺失误当成成功回答。
+- Agent 模式未生成有效决策仪表盘时保留本地趋势分析的评分、趋势和操作建议。
+- 持仓快照现价缺失时不再静默回退为持仓成本；缺价持仓会返回价格来源、日期、stale 与缺价状态，并从市值与未实现盈亏汇总中排除。
+- 分析 Prompt 在注入 `trend_analysis` 前清洗互斥趋势理由，减少多空理由同时污染提示词。
+- LLM 返回非 JSON 响应时继续尝试备用模型，所有模型均无法返回合法 JSON 时再降级为文本 fallback。
+- LiteLLM 内部 DEBUG 日志默认压低到 WARNING；需要排查时可临时设置 `LITELLM_LOG_LEVEL=DEBUG`。
+
+### 文档
+
+- 补充 LLM 配置指南与 FAQ，明确问股 Agent 对 `LITELLM_CONFIG` / `LLM_CHANNELS` / legacy `GEMINI_*` `OPENAI_*` `ANTHROPIC_*` 的兼容优先级、回退路径与“不静默迁移旧配置”的结论。
+
+### 测试
+
+- 新增 Bot 市场命令、港股指数、首次配置状态、市场复盘和相关回归测试。
+
+## [3.14.1] - 2026-04-26
+
+- [测试] 修正大盘复盘 prompt 测试对“明日交易计划”标题的断言，并同步桌面端版本号，恢复发布 gate。
+
+## [3.14.0] - 2026-04-26
+
+### 发布亮点
+
+- 大盘复盘升级为盘后工作台式结构。
+- 桌面端新增 GitHub Release 更新提醒。
+- Pipeline Agent 数据加载改为 DB-first，并冻结 `target_date`，减少重复 HTTP 请求和跨日漂移。
+- Docker 发布链路整理，官方 Docker Hub 镜像名统一为 `zhulinsen/daily_stock_analysis`。
+- LLM 渠道、DeepSeek V4、Kimi K2.6 固定温度和静态资源一致性检查补强。
+
+### 新功能
+
+- Web 首页历史报告区新增重新分析入口，支持基于原始 prompt 重做同一只股票同日期的分析。
+- Windows/macOS 桌面端新增 GitHub Release 更新提醒，并支持从设置页手动检查后跳转下载页。
+
+### 改进
+
+- A 股大盘复盘报告改为结构化盘后工作台版式。
+- Docker 发布工作流收敛为正式发布与手动补发链路。
+- Agent 日线工具优先复用本地缓存，同时持久化新获取的日线与新闻情报。
+
+### 修复
+
+- Pipeline Agent K 线工具 DB-first 加载，减少同一只股票重复 HTTP 请求。
+- Pipeline Agent 执行前按需预热 240 天 K 线历史到 DB。
+- 冻结 `target_date` 并通过 ContextVar 透传到 Pipeline Agent K 线工具线程。
+- Windows 桌面端后端日志转抄编码修复，减少中文乱码。
+- GitHub Actions 每日分析工作流补齐 LLM 渠道变量透传。
+- 历史报告详情接口修正 `change_pct` 取值，避免把 `0.0` 当作缺失值丢弃。
+- DeepSeek 官方渠道预设与示例配置同步到 V4。
+- 桌面端打包链路新增静态资源一致性检查。
+- 后端 `/assets/*` 改为显式路由托管。
+- `kimi-k2.6` 自动使用固定温度。
+
+### 文档
+
+- 补充官方 Docker 镜像、飞书 Webhook、README、完整指南、英文与繁中说明。
+
+### 测试
+
+- 稳定市场复盘相关测试的 LiteLLM stub 行为，并让 pytest 默认跳过前端依赖目录。
+
+## [3.13.0] - 2026-04-21
+
+### 发布亮点
+
+- 🌉 **长桥 OpenAPI 数据源接入** — 美股/港股行情优先使用 Longbridge，YFinance / AkShare 自动兜底；未配置时行为不变。
+- 📈 **Tushare 港股全链路扩展** — 港股日线通过 `hk_daily` 获取；筹码分布对港股返回 `None`；换算单位跟随港股口径，不再套用 A 股手/千元规则。
+- 🔍 **Anspire Search 语义搜索接入** — 配置 `ANSPIRE_*` 后即可使用 Anspire Search 获取实时行情及资讯，未配置时完全透明。
+- 🚀 **普通分析链路支持 LLM 流式生成** — 首页任务 SSE 新增 `task_progress` 事件，进度更细化；不支持流式的 provider 自动回退到非流式调用。
+- 🤖 **Web 渠道编辑器支持按需拉取可用模型列表** — `/v1/models` 统一模型发现入口，多选写回 `LLM_{CHANNEL}_MODELS`，拉取失败时保留手动输入降级。
+- 🛡️ **Agent 稳定性与预算护栏全面补强** — `AGENT_MAX_STEPS` 语义统一、技能降级不中断管线、SSE 异常透传、技能加载 warning 日志补齐。
+- 🛠️ **SQLite 写入链路原子化** — 批量原子 upsert + WAL + `busy_timeout` + 有限写入重试，显著降低批量分析并发锁竞争。
+
+### 新功能
+
+- 🌉 **集成 Longbridge OpenAPI 作为美股/港股可选数据源**（fixes #981）— 配置 `LONGBRIDGE_*` 后优先使用长桥获取日线与实时行情，YFinance / AkShare 兜底；未配置时行为与此前一致。联调使用 `tests/longbridge_live_smoke.py`（手动脚本，不参与 pytest 收集）。
+- 📈 **Tushare 支持港股日线查询** — 配置 Tushare 凭证后调用 `hk_daily` 接口获取港股数据；权限不足时抛出异常，与原流程一致。
+- 🔍 **集成 Anspire Search 可选语义搜索后端** — 配置 `ANSPIRE_*` 可使用 Anspire Search 获取实时行情及新闻资讯；未配置时行为与此前一致。联调使用 `tests/test_anspire_search.py`（手动脚本）。
+- 🚀 **普通分析链路支持 LiteLLM 流式生成与更细任务进度** — 股票分析在 LLM 阶段优先尝试 `stream=True` 并在服务端累积 chunk，首页任务 SSE 新增 `task_progress` 事件与更细的 `message/progress` 更新；仅在最终 JSON 解析成功后持久化历史报告；不支持流式的 provider 自动回退到非流式调用。
+- 🤖 **Web AI 模型配置支持按渠道获取可用模型列表** — 渠道编辑器支持调用 `/v1/models` 拉取可用模型，并以多选方式写回 `LLM_{CHANNEL}_MODELS`；拉取失败时保留手动输入作为降级路径。
+
+### 改进
+
+- 🔎 **SerpAPI 正文补抓范围收敛** — 自然搜索结果不再逐条同步抓取网页正文；仅对极少数高位且摘要不足的结果做延迟补抓，优先复用 SerpAPI 已返回的结构化摘要，降低搜索链路尾延迟与慢站点放大风险。
+- 🤖 **LLM 接入体验简化** — 面向用户的 AI 模型接入文案统一为"主模型 / Agent 主模型 / 备选模型 / 模型渠道"，不再把 LiteLLM 当作普通用户必学概念，现有 `LITELLM_*` / `LLM_CHANNELS` 配置键保持兼容。
+- 🧠 **IntelAgent 新增公司公告搜索与主力资金流工具** — 增加上交所/深交所/cninfo 公告搜索维度与 `get_capital_flow` 工具，修复 Agent 模式下公告和资金流数据经常缺失的问题。
+- 📦 **后端股票名称解析优先复用 `stocks.index.json`** — 懒加载缓存前端静态索引，纯后端/缺失静态资源场景静默降级回 `STOCK_NAME_MAP` 与原有数据源回退链路。
+- 📊 **TushareFetcher 港股单位适配** — `get_chip_distribution` 对港股直接返回 `None`（港股暂不支持筹码分布）；`_normalize_data` 对港股（`hk_daily`）不再做 A 股手→股、千元→元的缩放，与 Tushare 港股字段语义一致。
+- ⏱️ **Agent 超步数错误增加 `AGENT_MAX_STEPS` 调整提示** — 帮助用户自助排查步数限制问题。
+- ⚙️ **GitHub Actions 分析任务超时支持 `vars` 配置** — `daily_analysis.yml` 任务超时从 repository variables 读取，无需修改代码即可调整运行超时上限（fixes #1014）。
+
+### 修复
+
+- 📣 **大盘复盘链路接入 `REPORT_LANGUAGE`** — `REPORT_LANGUAGE=en` 时，A 股/合并复盘的 Prompt、章节标题、模板兜底文案与通知包装标题统一输出英文，避免英文正文搭配中文标题的混排问题。
+- 📈 **EfinanceFetcher 指数开盘价映射兼容**（fixes #1043）— `get_main_indices()` 的开盘价映射改为兼容 `今开 → 开盘 → open`，修复部分 efinance 版本下指数开盘价被读成缺失值的问题。
+- 🤖 **AGENT_MAX_STEPS 语义统一**（fixes #1026）— 在 orchestrator 多 Agent 模式下明确为"各子 Agent 步数上限而非硬覆盖"；TechnicalAgent 等高默认值 Agent 会被封顶，低默认值 Agent 保持原值；用户主动调高（>10）时统一覆盖所有子 Agent。修复了用户设置 12 但 TechnicalAgent 仍以默认 6 步运行并报 "Agent exceeded max steps" 的问题。
+- 🛡️ **Specialist（Skill）Agent 失败改为优雅降级** — 技能 Agent 失败不再中断整个分析管线，与 intel/risk 保持相同的降级策略。
+- 🔧 **MiniMax-M2.7 连接测试修复** — 修复 LLM 通道连接测试在 MiniMax-M2.7 下返回 "Empty response" 的问题；将 `max_tokens` 上限从 8 提升至 256 以容纳思考过程，并添加 `content_blocks` 格式解析逻辑。
+- 📊 **移除 `sentiment_score` 范围约束**（fixes #942）— 移除 `HistoryItem` 与 `ReportSummary` 响应 Schema 中 `sentiment_score` 的 `ge=0/le=100` 约束，历史库中存储的超范围值不再触发 Pydantic ValidationError。
+- 🖥️ **WebUI 前端资源缺失时发出明确警告** — `webui_frontend.py` 在 `static/index.html` 存在但 `static/assets/` 缺失时发出 warning，避免 CSS/JS 资源缺失导致页面异常变大却无从排查（fixes #944）。
+- 🔗 **分析管线可选服务降级初始化** — `StockAnalysisPipeline` 搜索服务与社交舆情服务任一初始化异常时，记录 warning 并以禁用状态继续运行，避免外部依赖抖动阻塞主分析链路。
+- 🖥️ **桌面端版本展示统一读取 `package.json`** — 统一读取 `apps/dsa-desktop/package.json`，移除 preload 中硬编码的 `0.1.0`，设置页展示真实桌面端版本；修复版本号显示错误（fixes #1048）。
+- 🐋 **港股名称获取失败修复**（fixes #940）— 修复主数据源字段缺失时无法正确回退到备用字段获取港股名称的问题。
+- 🔄 **SSE 任务流断开时 `CancelledError` 正确 re-raise**（fixes #967）— 修复 SSE 流中断时异常被静默吞掉导致故障无日志可查的问题。
+- 🔄 **Agent SSE 清理阶段后台任务异常正确上报**（fixes #969）— 流结束时后台执行器异常现在正确记录并上报，避免错误无法感知。
+- 🔇 **技能加载异常补充 `logger.warning` 日志**（fixes #970）— 在 `ask.py`、`skills/aggregator.py`、`skills/router.py` 的静默 except 块补充日志，确保技能列表为空时有日志可查。
+- 🛠️ **SQLite 写入链路原子化**（fixes #878）— `stock_daily(code,date)` 使用批量原子 upsert；文件型 SQLite 连接默认启用 WAL + `busy_timeout` + 有限写入重试；"新增数"改按本次真正插入窗口计算。
+- 💰 **多 Agent / 单 Agent 预算护栏语义统一** — 剩余预算低于最小阈值时主动跳过并降级；已完成阶段可构建降级报告时返回 `success=True` 并携带非空内容，否则返回 `success=False`。
+- ⚙️ **GitHub Actions `daily_analysis.yml` 补齐 `REPORT_LANGUAGE` 注入**（fixes #1013）— 修复用户在 Secrets/Variables 中配置 `REPORT_LANGUAGE` 后不生效的问题。
+- 📊 **任务状态 API 补齐实时价格字段**（fixes #983）— `GET /api/v1/analysis/status/{task_id}` 从数据库回填已完成任务时补齐 `current_price` / `change_pct`，修复首页报告股票名旁不显示实时价格的问题。
+- 📅 **非交易日数据返回最近交易日**（fixes #1009）— 修复非交易日（周末/节假日）筹码分布与板块排行返回倒数第二个交易日数据的问题，现在正常返回最近交易日数据。
+- 🔍 **A 股资讯搜索恢复中文优先** — `search_stock_news()` 在首个 provider 主要返回英文资讯时继续尝试后续引擎，并将同批结果中的中文资讯排到前面；非美股查询不再默认沿用 Brave 的 `en/US` 区域语言偏好。
+- 📨 **飞书群机器人通知支持签名校验** — 飞书通知现在支持 `FEISHU_WEBHOOK_SECRET` / `FEISHU_WEBHOOK_KEYWORD`；Web 设置与文档明确区分 Webhook 推送模式和 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 应用模式，降低误配风险。
+- ⚡ **LLM 适配层新增 `RateLimitError` 和 `ContextWindowExceeded` 检测** — 识别并处理速率限制与上下文窗口超出错误，提升分析链路在高负载或长文本场景下的健壮性（fixes #1002）。
+
+### 测试
+
+- 🧪 **TushareFetcher 港股相关单元测试** — 新增 `get_chip_distribution` 筹码分布获取与 `_normalize_data` 港股/A 股/ETF 单位处理的单元测试，覆盖港股特殊路径。
+
+### 文档
+
+- 📘 **DEPLOY.md 补充 UI 元素异常变大排查步骤** — 新增重建 Docker 镜像或手动执行 `npm run build` 的排查指南；`deploy-webui-cloud.md` 同步更新。
+- 📨 **飞书 Webhook 配置说明补全** — 强调 `FEISHU_WEBHOOK_URL` 是群通知必填项、签名校验须两端同时启用或关闭、`FEISHU_APP_SECRET` 仅用于应用/Stream Bot 模式；`.env.example` 补充内联注释；同步英文指南。
+- 🤝 **FAQ 补充 Ollama 连接失败排障条目（Q12c）** — 覆盖服务未启动、URL 配置错误、模型前缀缺失、模型未下载、远程防火墙等 5 个检查点（fixes #854）。
+- 🌉 **README 补充长桥数据源使用说明** — 中/英/繁 README 明确长桥"首选 / 兜底 / 未配置不调用"边界；`docs/` 内相对路径链接修复；`LONGBRIDGE_PRINT_QUOTE_PACKAGES` 配置与代码及 `.env.example` 对齐。
+- 🐋 **Docker 安装场景版本说明** — 补充最小化文档，明确 Docker 安装场景下应以 Git tag / 镜像 tag 判断版本（fixes #1091）。
 
 ## [3.12.0] - 2026-04-01
 
@@ -1253,7 +1383,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.11.0...HEAD
+[Unreleased]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.14.2...HEAD
+[3.14.2]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.14.1...v3.14.2
+[3.14.1]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.14.0...v3.14.1
+[3.14.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.13.0...v3.14.0
+[3.13.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.12.0...v3.13.0
+[3.12.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.11.0...v3.12.0
 [3.11.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.10.1...v3.11.0
 [3.10.1]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.10.0...v3.10.1
 [3.10.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.9.0...v3.10.0
@@ -1300,3 +1435,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 [1.2.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v1.0.0
+## 2026-04-24
+
+### Added
+
+- `src/models/metaphysical/model_backtest.py`
+  - 新增 `apply_tactical_report_signal_overlay()`，用于在每日战术报告与模型信号冲突时做文本风险覆盖。
+  - 新增 `latest_next_production_signal_with_report_overlay()`，用于直接产出日报纠偏后的最终信号。
+- `src/models/metaphysical/report_ingest.py`
+  - 日报解析结果现可直接驱动信号纠偏，支持把 `黑天鹅预警 + 物理封锁` 这类高危组合强制下调为 `risk_off`。
+- `scripts/generate_next_production_signal.py`
+  - 新增轻量每日信号入口，可直接读取已有概率缓存与当天 Google Doc 归档文本，输出最终执行信号。
+- `main.py`
+  - 合并日报摘要新增玄学模型最终信号行，可在 `今日结论` 中直接显示 `raw -> final` 的风险纠偏结果。
+- `tests/test_metaphysical_features.py`
+  - 增加日报风险覆盖测试，验证 `full_risk -> caution` 与严重场景 `full_risk -> risk_off` 两类覆盖路径。

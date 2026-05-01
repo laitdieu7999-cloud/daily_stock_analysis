@@ -39,6 +39,9 @@ class FeishuSender:
         self._feishu_secret = (getattr(config, 'feishu_webhook_secret', None) or '').strip()
         self._feishu_keyword = (getattr(config, 'feishu_webhook_keyword', None) or '').strip()
         self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
+        self._feishu_rate_limit_retry_seconds = float(
+            getattr(config, 'feishu_rate_limit_retry_seconds', 2.0) or 2.0
+        )
         self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
 
     def _get_keyword_prefix(self) -> str:
@@ -94,7 +97,7 @@ class FeishuSender:
                 "header": {
                     "title": {
                         "tag": "plain_text",
-                        "content": "A股智能分析报告"
+                        "content": "股票智能分析报告"
                     }
                 }
             }
@@ -191,19 +194,24 @@ class FeishuSender:
         """发送单条飞书消息（优先使用 Markdown 卡片）"""
         prepared_content = self._apply_keyword_prefix(content)
         security_fields = self._build_security_fields()
+        rate_limited = False
 
         def _post_payload(payload: Dict[str, Any]) -> bool:
+            nonlocal rate_limited
             request_payload = dict(payload)
             request_payload.update(security_fields)
             logger.debug(f"飞书请求 URL: {self._feishu_url}")
             logger.debug(f"飞书请求 payload 长度: {len(prepared_content)} 字符")
 
-            response = requests.post(
-                self._feishu_url,
-                json=request_payload,
-                timeout=30,
-                verify=self._webhook_verify_ssl
-            )
+            def _post_once() -> requests.Response:
+                return requests.post(
+                    self._feishu_url,
+                    json=request_payload,
+                    timeout=30,
+                    verify=self._webhook_verify_ssl
+                )
+
+            response = _post_once()
 
             logger.debug(f"飞书响应状态码: {response.status_code}")
             logger.debug(f"飞书响应内容: {response.text}")
@@ -214,6 +222,34 @@ class FeishuSender:
                 if code == 0:
                     logger.info("飞书消息发送成功")
                     return True
+                if str(code) == "11232":
+                    logger.warning(
+                        "飞书触发频控 [code=11232]，等待 %.1fs 后重试一次",
+                        self._feishu_rate_limit_retry_seconds,
+                    )
+                    time.sleep(self._feishu_rate_limit_retry_seconds)
+                    retry_response = _post_once()
+                    logger.debug(f"飞书重试响应状态码: {retry_response.status_code}")
+                    logger.debug(f"飞书重试响应内容: {retry_response.text}")
+                    if retry_response.status_code == 200:
+                        retry_result = retry_response.json()
+                        retry_code = (
+                            retry_result.get('code')
+                            if 'code' in retry_result
+                            else retry_result.get('StatusCode')
+                        )
+                        if retry_code == 0:
+                            logger.info("飞书消息重试发送成功")
+                            return True
+                        if str(retry_code) == "11232":
+                            rate_limited = True
+                        error_msg = retry_result.get('msg') or retry_result.get('StatusMessage', '未知错误')
+                        logger.error(f"飞书重试返回错误 [code={retry_code}]: {error_msg}")
+                        logger.error(f"完整响应: {retry_result}")
+                        return False
+                    logger.error(f"飞书重试请求失败: HTTP {retry_response.status_code}")
+                    logger.error(f"重试响应内容: {retry_response.text}")
+                    return False
                 else:
                     error_msg = result.get('msg') or result.get('StatusMessage', '未知错误')
                     error_code = result.get('code') or result.get('StatusCode', 'N/A')
@@ -250,6 +286,9 @@ class FeishuSender:
 
         if _post_payload(card_payload):
             return True
+        if rate_limited:
+            logger.warning("飞书仍处于频控状态，跳过普通文本回退，避免继续放大限流")
+            return False
 
         # 2) 回退为普通文本消息
         text_payload = {

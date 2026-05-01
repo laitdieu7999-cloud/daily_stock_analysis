@@ -21,7 +21,7 @@ class SystemConfigFieldSchema(BaseModel):
     key: str = Field(..., description="Configuration key name")
     title: Optional[str] = Field(None, description="Display title")
     description: Optional[str] = Field(None, description="Field description")
-    category: Literal["base", "data_source", "ai_model", "notification", "system", "agent", "backtest", "uncategorized"]
+    category: str = Field(..., description="Configuration category key")
     data_type: Literal["string", "integer", "number", "boolean", "array", "json", "time"]
     ui_control: Literal["text", "password", "number", "select", "textarea", "switch", "time"]
     is_sensitive: bool
@@ -69,6 +69,28 @@ class SystemConfigResponse(BaseModel):
     mask_token: str
     items: List[SystemConfigItem]
     updated_at: Optional[str] = None
+
+
+class SetupStatusCheck(BaseModel):
+    """One first-run setup readiness check."""
+
+    key: str
+    title: str
+    category: Literal["base", "ai_model", "agent", "notification", "system"]
+    required: bool
+    status: Literal["configured", "inherited", "optional", "needs_action"]
+    message: str
+    next_step: Optional[str] = None
+
+
+class SetupStatusResponse(BaseModel):
+    """Read-only first-run setup status."""
+
+    is_complete: bool
+    ready_for_smoke: bool
+    required_missing_keys: List[str] = Field(default_factory=list)
+    next_step_key: Optional[str] = None
+    checks: List[SetupStatusCheck] = Field(default_factory=list)
 
 
 class ExportSystemConfigResponse(BaseModel):

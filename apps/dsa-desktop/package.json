@@ -1,49 +1,68 @@
 {
   "name": "daily-stock-analysis-desktop",
-  "version": "3.14.1",
+  "version": "3.14.2",
   "private": true,
+  "description": "Desktop shell for the Daily Stock Analysis local market analysis system.",
+  "author": "Daily Stock Analysis Contributors",
   "main": "main.js",
-  "scripts": {
-    "dev": "electron .",
-    "build": "electron-builder",
-    "test": "node --test tests/preload.test.js"
-  },
   "devDependencies": {
     "electron": "^31.4.0",
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "com.daily-stock-analysis.desktop",
-    "productName": "Daily Stock Analysis",
-    "directories": {
-      "output": "dist"
-    },
+    "appId": "com.electron.daily-stock-analysis-desktop",
+    "productName": "daily-stock-analysis-desktop",
+    "asar": true,
     "files": [
       "main.js",
       "preload.js",
-      "renderer/**/*"
+      "renderer/**/*",
+      "package.json"
     ],
     "extraResources": [
       {
-        "from": "../../.env.example",
-        "to": ".env.example"
+        "from": "../../dist/backend",
+        "to": "backend"
       },
       {
-        "from": "../../dist/backend/stock_analysis",
-        "to": "backend/stock_analysis"
+        "from": "../../.env.example",
+        "to": ".env.example"
       }
     ],
-    "win": {
-      "target": "nsis"
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "target": [
+        "dmg"
+      ],
+      "extendInfo": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true,
+          "NSExceptionDomains": {
+            "127.0.0.1": {
+              "NSIncludesSubdomains": false,
+              "NSTemporaryExceptionAllowsInsecureHTTPLoads": true,
+              "NSTemporaryExceptionAllowsInsecureHTTPSLoads": false,
+              "NSTemporaryExceptionMinimumTLSVersion": "1.0",
+              "NSTemporaryExceptionRequiresForwardSecrecy": false
+            },
+            "localhost": {
+              "NSIncludesSubdomains": false,
+              "NSTemporaryExceptionAllowsInsecureHTTPLoads": true,
+              "NSTemporaryExceptionAllowsInsecureHTTPSLoads": false,
+              "NSTemporaryExceptionMinimumTLSVersion": "1.0",
+              "NSTemporaryExceptionRequiresForwardSecrecy": false
+            }
+          }
+        }
+      }
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "allowElevation": false,
       "include": "installer.nsh"
-    },
-    "mac": {
-      "target": "dmg"
     }
   }
 }

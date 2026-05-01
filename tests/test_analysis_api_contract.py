@@ -284,6 +284,93 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(result["stock_name"], "Unnamed Stock")
         self.assertEqual(result["report"]["meta"]["stock_name"], "Unnamed Stock")
 
+    def test_build_analysis_response_cleans_messy_sniper_strategy_fields(self) -> None:
+        service = AnalysisService()
+        result = service._build_analysis_response(
+            SimpleNamespace(
+                code="600519",
+                name="贵州茅台",
+                current_price=112.0,
+                change_pct=1.23,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="hold",
+                trend_prediction="up",
+                sentiment_score=80,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                report_language="zh",
+                market_snapshot={"price": "112.00", "date": "2026-04-30", "source": "akshare"},
+                data_sources="akshare",
+                get_sniper_points=lambda: {
+                    "ideal_buy": {"price": 112, "reason": "MA5附近"},
+                    "secondary_buy": '{"low": 110, "high": 111, "condition": "缩量回踩"}',
+                    "stop_loss": ["108"],
+                    "take_profit": {"value": 120},
+                },
+            ),
+            "q1",
+            report_type="full",
+        )
+
+        strategy = result["report"]["strategy"]
+        self.assertEqual(strategy["ideal_buy"], "112.00元（MA5附近）")
+        self.assertEqual(strategy["secondary_buy"], "110.00-111.00元（缩量回踩）")
+        self.assertEqual(strategy["stop_loss"], "108.00元")
+        self.assertEqual(strategy["take_profit"], "120.00元")
+        self.assertEqual(result["report"]["details"]["market_snapshot"]["source"], "akshare")
+        self.assertEqual(result["report"]["details"]["data_sources"], "akshare")
+
+    def test_build_analysis_response_rewrites_bearish_strategy_target_as_pressure(self) -> None:
+        service = AnalysisService()
+        result = service._build_analysis_response(
+            SimpleNamespace(
+                code="002580.SZ",
+                name="圣阳股份",
+                current_price=27.48,
+                change_pct=-3.92,
+                model_used="test-model",
+                analysis_summary="放量破位，立即止损。",
+                operation_advice="卖出",
+                decision_type="sell",
+                trend_prediction="强烈看空",
+                sentiment_score=28,
+                news_summary="news",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                report_language="zh",
+                dashboard={
+                    "data_perspective": {
+                        "price_position": {
+                            "current_price": 27.48,
+                            "ma5": 28.42,
+                            "ma10": 28.91,
+                            "resistance_level": 28.42,
+                        }
+                    }
+                },
+                trend_analysis={"ma5": 28.42, "ma10": 28.91, "resistance_levels": [33.64]},
+                get_sniper_points=lambda: {
+                    "ideal_buy": "暂不新开仓；重新站回MA5附近 28.42元 后再评估",
+                    "secondary_buy": "保守等待回踩MA10附近 28.91元 且止跌后再看",
+                    "stop_loss": "立即止损：以现价27.48元或更优价格清仓。若无法执行，强制止损位设于26.00元。",
+                    "take_profit": "目标位：33.64元（压力位或约8%风险回报目标）",
+                },
+            ),
+            "q1",
+            report_type="full",
+        )
+
+        strategy = result["report"]["strategy"]
+        self.assertEqual(strategy["ideal_buy"], "暂不接回；重新站回28.42元后再评估（较现价+3.4%）")
+        self.assertEqual(strategy["secondary_buy"], "确认转强：站稳28.91元且止跌后再看")
+        self.assertEqual(strategy["stop_loss"], "27.48元附近离场；硬止损26.00元")
+        self.assertEqual(strategy["take_profit"], "反抽出局线：28.42元附近（不是止盈目标）")
+        self.assertNotIn("33.64", strategy["take_profit"])
+
     def test_build_analysis_report_extracts_fundamental_fields_from_snapshot(self) -> None:
         if _build_analysis_report is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -293,7 +380,11 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 "meta": {},
                 "summary": {},
                 "strategy": {},
-                "details": {"news_summary": "news"},
+                "details": {
+                    "news_summary": "news",
+                    "market_snapshot": {"price": "112.00", "date": "2026-04-30", "source": "akshare"},
+                    "data_sources": "akshare",
+                },
             },
             query_id="q1",
             stock_code="600519",
@@ -315,6 +406,8 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
         self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.5)
+        self.assertEqual(report.details.market_snapshot["source"], "akshare")
+        self.assertEqual(report.details.data_sources, "akshare")
 
     def test_build_analysis_report_extracts_related_board_fields_from_snapshot(self) -> None:
         if _build_analysis_report is None:
@@ -939,6 +1032,33 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             json.loads(response.body),
             {"error": "not_found", "message": "API endpoint /api not found"},
         )
+
+    def test_spa_fallback_blocks_path_traversal(self) -> None:
+        """SPA fallback must not serve files outside static_dir."""
+        if create_app is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        from fastapi.responses import FileResponse
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            static_dir = root / "static"
+            static_dir.mkdir()
+            (static_dir / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+            secret = root / "secret.txt"
+            secret.write_text("TOPSECRET", encoding="utf-8")
+
+            app = create_app(static_dir=static_dir)
+            serve_spa = next(
+                route.endpoint for route in app.routes
+                if getattr(route, "path", None) == "/{full_path:path}"
+            )
+
+            for traversal in ("../secret.txt", "../../secret.txt", "foo/../../secret.txt"):
+                with self.subTest(traversal=traversal):
+                    response = asyncio.run(serve_spa(None, traversal))
+                    self.assertIsInstance(response, FileResponse)
+                    self.assertEqual(Path(response.path).resolve(), (static_dir / "index.html").resolve())
 
     def test_sse_generator_reraises_cancelled_error(self) -> None:
         """CancelledError must propagate (not be swallowed) from the SSE event generator."""

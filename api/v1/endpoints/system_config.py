@@ -15,6 +15,7 @@ from api.v1.schemas.system_config import (
     DiscoverLLMChannelModelsResponse,
     ExportSystemConfigResponse,
     ImportSystemConfigRequest,
+    SetupStatusResponse,
     SystemConfigConflictResponse,
     SystemConfigResponse,
     SystemConfigSchemaResponse,
@@ -26,12 +27,14 @@ from api.v1.schemas.system_config import (
     ValidateSystemConfigRequest,
     ValidateSystemConfigResponse,
 )
+from api.v1.schemas.system_overview import SystemOverviewResponse
 from src.services.system_config_service import (
     ConfigConflictError,
     ConfigImportError,
     ConfigValidationError,
     SystemConfigService,
 )
+from src.services.system_overview_service import SystemOverviewService
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,33 @@ def _ensure_desktop_mode() -> None:
             detail={
                 "error": "desktop_only_feature",
                 "message": "This endpoint is only available in desktop mode",
+            },
+        )
+
+
+@router.get(
+    "/overview",
+    response_model=SystemOverviewResponse,
+    responses={
+        200: {"description": "System overview loaded"},
+        401: {"description": "Unauthorized", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Get system control-plane overview",
+    description="Read-only overview of routing priorities, scheduler status, report caches, and signal archives.",
+)
+def get_system_overview() -> SystemOverviewResponse:
+    """Return a read-only operational overview for the local system."""
+    try:
+        payload = SystemOverviewService().build_overview()
+        return SystemOverviewResponse.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to load system overview: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to load system overview",
             },
         )
 
@@ -76,6 +106,35 @@ def get_system_config(
             detail={
                 "error": "internal_error",
                 "message": "Failed to load system configuration",
+            },
+        )
+
+
+@router.get(
+    "/config/setup/status",
+    response_model=SetupStatusResponse,
+    responses={
+        200: {"description": "Setup status loaded"},
+        401: {"description": "Unauthorized", "model": ErrorResponse},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Get first-run setup status",
+    description="Read a side-effect-free setup readiness summary from saved and runtime configuration.",
+)
+def get_setup_status(
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> SetupStatusResponse:
+    """Return first-run setup status without writing config or reloading runtime state."""
+    try:
+        payload = service.get_setup_status()
+        return SetupStatusResponse.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to load setup status: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "internal_error",
+                "message": "Failed to load setup status",
             },
         )
 

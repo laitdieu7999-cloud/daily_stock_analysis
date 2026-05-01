@@ -141,5 +141,30 @@ class TestDiscordInteractionPublicKeyField(unittest.TestCase):
         self.assertIn("DISCORD_INTERACTIONS_PUBLIC_KEY", field_keys)
 
 
+class TestExtendedSystemConfigCategories(unittest.TestCase):
+    """New registry categories must remain exposed to the settings UI."""
+
+    def test_schema_response_includes_extended_categories(self):
+        schema = build_schema_response()
+        categories = {item["category"] for item in schema["categories"]}
+
+        self.assertTrue(
+            {"strategy", "schedule", "integration", "advanced"}.issubset(categories)
+        )
+
+    def test_strategy_schedule_integration_and_advanced_fields_are_grouped(self):
+        schema = build_schema_response()
+        category_fields = {
+            item["category"]: {field["key"] for field in item["fields"]}
+            for item in schema["categories"]
+        }
+
+        self.assertIn("EXTERNAL_TACTICAL_REPORT_PATH", category_fields["strategy"])
+        self.assertIn("CLOSE_REMINDER_TIME", category_fields["schedule"])
+        self.assertIn("NIGHTLY_MARKET_OUTLOOK_TIME", category_fields["schedule"])
+        self.assertIn("JIN10_API_KEY", category_fields["integration"])
+        self.assertIn("ENABLE_METAPHYSICAL_FEATURES", category_fields["advanced"])
+
+
 if __name__ == "__main__":
     unittest.main()

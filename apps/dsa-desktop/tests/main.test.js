@@ -4,14 +4,23 @@ const Module = require('node:module');
 const { EventEmitter } = require('node:events');
 
 function loadMainModule(t) {
+  return loadMainModuleWithApp(t, {});
+}
+
+function loadMainModuleWithApp(t, appOverrides = {}) {
   const originalLoad = Module._load;
+  const setPathCalls = [];
   const fakeApp = {
     isPackaged: false,
     getVersion: () => '3.12.0',
     getPath: () => '/tmp/dsa-user-data',
+    setPath: (name, value) => {
+      setPathCalls.push([name, value]);
+    },
     whenReady: () => ({ then: () => undefined }),
     on: () => undefined,
     quit: () => undefined,
+    ...appOverrides,
   };
   const fakeDialog = {
     showMessageBox: async () => ({ response: 0 }),
@@ -53,7 +62,9 @@ function loadMainModule(t) {
     delete require.cache[mainPath];
   });
 
-  return require('../main.js');
+  const loaded = require('../main.js');
+  loaded.__setPathCalls = setPathCalls;
+  return loaded;
 }
 
 test('parseSemver accepts stable and prerelease tags', (t) => {
@@ -171,6 +182,40 @@ test('sanitizeReleaseUrl falls back for non-release links', (t) => {
     ),
     `https://github.com/${mainModule.GITHUB_OWNER}/${mainModule.GITHUB_REPO}/releases/tag/v3.13.0`
   );
+});
+
+test('resolveAppDir uses userData for packaged macOS app', (t) => {
+  const mainModule = loadMainModuleWithApp(t, {
+    isPackaged: true,
+    getPath: (key) => {
+      if (key === 'exe') {
+        return '/Users/test/Desktop/股票分析桌面端.app/Contents/MacOS/Daily Stock Analysis';
+      }
+      if (key === 'appData') {
+        return '/Users/test/Library/Application Support';
+      }
+      return '/tmp/dsa-user-data';
+    },
+  });
+
+  const resolved = mainModule.resolveAppDir();
+  assert.equal(resolved, '/Users/test/Library/Application Support/Daily Stock Analysis');
+});
+
+test('applyDesktopStatePaths redirects packaged macOS userData to fixed app support dir', (t) => {
+  const mainModule = loadMainModuleWithApp(t, {
+    isPackaged: true,
+    getPath: (key) => {
+      if (key === 'appData') {
+        return '/Users/test/Library/Application Support';
+      }
+      return '/tmp/dsa-user-data';
+    },
+  });
+
+  assert.deepEqual(mainModule.__setPathCalls, [
+    ['userData', '/Users/test/Library/Application Support/Daily Stock Analysis'],
+  ]);
 });
 
 test('fetchLatestReleaseJson rejects when response stream errors', async (t) => {

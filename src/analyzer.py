@@ -61,6 +61,23 @@ class _LiteLLMStreamError(RuntimeError):
         self.partial_received = partial_received
 
 
+class _AllModelsFailedError(Exception):
+    """Raised when every model in the fallback chain fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        last_response_text: Optional[str] = None,
+        last_model: Optional[str] = None,
+        last_usage: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.last_response_text = last_response_text
+        self.last_model = last_model
+        self.last_usage = last_usage or {}
+
+
 def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
     """
     Check mandatory fields for report content integrity.
@@ -84,14 +101,14 @@ def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
     intel = intel if isinstance(intel, dict) else None
     if intel is None or "risk_alerts" not in intel:
         missing.append("dashboard.intelligence.risk_alerts")
-    if result.decision_type in ("buy", "hold"):
-        battle = dash.get("battle_plan")
-        battle = battle if isinstance(battle, dict) else {}
-        sp = battle.get("sniper_points")
-        sp = sp if isinstance(sp, dict) else {}
-        stop_loss = sp.get("stop_loss")
-        if stop_loss is None or (isinstance(stop_loss, str) and not stop_loss.strip()):
-            missing.append("dashboard.battle_plan.sniper_points.stop_loss")
+    battle = dash.get("battle_plan")
+    battle = battle if isinstance(battle, dict) else {}
+    sp = battle.get("sniper_points")
+    sp = sp if isinstance(sp, dict) else {}
+    for key in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit"):
+        value = sp.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(f"dashboard.battle_plan.sniper_points.{key}")
     return len(missing) == 0, missing
 
 
@@ -120,14 +137,15 @@ def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) 
                 result.dashboard["intelligence"] = {}
             if "risk_alerts" not in result.dashboard["intelligence"]:
                 result.dashboard["intelligence"]["risk_alerts"] = []
-        elif field == "dashboard.battle_plan.sniper_points.stop_loss":
+        elif field.startswith("dashboard.battle_plan.sniper_points."):
             if not result.dashboard:
                 result.dashboard = {}
             if "battle_plan" not in result.dashboard:
                 result.dashboard["battle_plan"] = {}
             if "sniper_points" not in result.dashboard["battle_plan"]:
                 result.dashboard["battle_plan"]["sniper_points"] = {}
-            result.dashboard["battle_plan"]["sniper_points"]["stop_loss"] = placeholder
+            key = field.rsplit(".", 1)[-1]
+            result.dashboard["battle_plan"]["sniper_points"][key] = placeholder
 
 
 # ---------- chip_structure fallback (Issue #589) ----------
@@ -142,7 +160,23 @@ def _is_value_placeholder(v: Any) -> bool:
     if isinstance(v, (int, float)) and v == 0:
         return True
     s = str(v).strip().lower()
-    return s in ("", "n/a", "na", "数据缺失", "未知", "data unavailable", "unknown", "tbd")
+    if s in (
+        "",
+        "n/a",
+        "na",
+        "none",
+        "not applicable",
+        "数据缺失",
+        "未知",
+        "无",
+        "暂无",
+        "不适用",
+        "data unavailable",
+        "unknown",
+        "tbd",
+    ):
+        return True
+    return s.startswith("无（") or s.startswith("暂无")
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -158,6 +192,231 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(str(v).strip())
     except (TypeError, ValueError):
         return default
+
+
+_BULLISH_TREND_HINTS: Tuple[str, ...] = (
+    "多头排列",
+    "持续上涨",
+    "趋势向上",
+    "上升趋势",
+    "向上发散",
+    "bullish",
+    "uptrend",
+)
+_WEAK_BULLISH_TREND_HINTS: Tuple[str, ...] = ("弱势多头",)
+_BEARISH_TREND_HINTS: Tuple[str, ...] = (
+    "空头排列",
+    "持续下跌",
+    "趋势向下",
+    "下降趋势",
+    "向下发散",
+    "bearish",
+    "downtrend",
+)
+_WEAK_BEARISH_TREND_HINTS: Tuple[str, ...] = ("弱势空头",)
+_NEGATION_TOKENS: Tuple[str, ...] = (
+    "不是",
+    "并非",
+    "并未",
+    "没有",
+    "尚不",
+    "尚未",
+    "未",
+    "无",
+    "不属",
+    "非",
+    "not ",
+    "no ",
+)
+_NEGATION_BREAK_CHARS: Tuple[str, ...] = (
+    ",", ".", ";", ":", "!", "?", "，", "。", "；", "：", "！", "？", "\n"
+)
+_NEGATION_LOOKBACK_CHARS = 16
+_NEGATION_MAX_GAP_CHARS = 8
+_NEGATION_SCOPE_BREAK_TOKENS: Tuple[str, ...] = (
+    "而是",
+    "但是",
+    "但",
+    "反而",
+    "反倒",
+    "转为",
+    "转成",
+    "改为",
+    "改成",
+    " but ",
+    " instead ",
+    " rather ",
+)
+_SINGLE_CHAR_NEGATION_GAP_PREFIXES: Tuple[str, ...] = (
+    "形成",
+    "出现",
+    "进入",
+    "转为",
+    "转成",
+    "构成",
+    "呈现",
+    "显示",
+    "属于",
+    "是",
+    "有",
+    "能",
+    "见",
+    "站",
+    "守",
+    "破",
+)
+
+
+def _normalize_prompt_reason_items(items: Any) -> List[str]:
+    """Normalize prompt reason/risk items into a clean string list."""
+    if not isinstance(items, list):
+        return []
+    normalized: List[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _contains_trend_hint(text: str, hints: Tuple[str, ...]) -> bool:
+    """Return True when text contains a non-negated trend hint."""
+    lowered = text.strip().lower()
+
+    def _has_negation_scope_break(gap: str) -> bool:
+        normalized_gap = gap.lower()
+        for token in _NEGATION_SCOPE_BREAK_TOKENS:
+            token_index = normalized_gap.find(token)
+            if token_index > 0:
+                return True
+        return False
+
+    def _is_valid_negation_gap(token: str, gap: str) -> bool:
+        if not gap:
+            return True
+        if token not in {"未", "无", "非"}:
+            return True
+        return any(gap.startswith(prefix) for prefix in _SINGLE_CHAR_NEGATION_GAP_PREFIXES)
+
+    def _is_negated_match(index: int) -> bool:
+        prefix = lowered[max(0, index - _NEGATION_LOOKBACK_CHARS):index]
+        for token in _NEGATION_TOKENS:
+            token_index = prefix.rfind(token)
+            if token_index < 0:
+                continue
+            gap = prefix[token_index + len(token):]
+            if any(char in gap for char in _NEGATION_BREAK_CHARS):
+                continue
+            stripped_gap = gap.strip()
+            if len(stripped_gap) > _NEGATION_MAX_GAP_CHARS:
+                continue
+            if _has_negation_scope_break(stripped_gap):
+                continue
+            if not _is_valid_negation_gap(token, stripped_gap):
+                continue
+            return True
+        return False
+
+    for hint in hints:
+        keyword = hint.lower()
+        start = 0
+        while True:
+            index = lowered.find(keyword, start)
+            if index < 0:
+                break
+            if not _is_negated_match(index):
+                return True
+            start = index + len(keyword)
+    return False
+
+
+def _infer_trend_direction(trend: Dict[str, Any]) -> str:
+    """Infer the final trend direction from trend_status and ma_alignment."""
+    combined = " ".join(
+        str(trend.get(key, "")).strip()
+        for key in ("trend_status", "ma_alignment")
+        if str(trend.get(key, "")).strip()
+    )
+    if not combined:
+        return "neutral"
+    normalized = combined.lower().replace(" ", "")
+    has_bullish = (
+        _contains_trend_hint(combined, _BULLISH_TREND_HINTS + _WEAK_BULLISH_TREND_HINTS)
+        or "ma5>ma10>ma20" in normalized
+        or (
+            "ma5>ma10" in normalized
+            and any(pattern in normalized for pattern in ("ma10≤ma20", "ma10<=ma20"))
+        )
+    )
+    has_bearish = (
+        _contains_trend_hint(combined, _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS)
+        or "ma5<ma10<ma20" in normalized
+        or (
+            "ma5<ma10" in normalized
+            and any(pattern in normalized for pattern in ("ma10≥ma20", "ma10>=ma20"))
+        )
+    )
+    if has_bullish and not has_bearish:
+        return "bullish"
+    if has_bearish and not has_bullish:
+        return "bearish"
+    return "neutral"
+
+
+def _filter_conflicting_trend_items(items: List[str], conflict_hints: Tuple[str, ...]) -> List[str]:
+    return [item for item in items if not _contains_trend_hint(item, conflict_hints)]
+
+
+def _sanitize_trend_analysis_for_prompt(
+    trend: Any,
+    *,
+    volume_change_ratio: Any = None,
+) -> Dict[str, Any]:
+    """Clean prompt-only trend hints on a derived copy without touching runtime data."""
+    trend_dict = dict(trend) if isinstance(trend, dict) else {}
+    signal_reasons = _normalize_prompt_reason_items(trend_dict.get("signal_reasons"))
+    risk_factors = _normalize_prompt_reason_items(trend_dict.get("risk_factors"))
+    prompt_notes: List[str] = []
+    trend_direction = _infer_trend_direction(trend_dict)
+
+    if trend_direction == "bearish":
+        filtered_signal_reasons = _filter_conflicting_trend_items(
+            signal_reasons,
+            _BULLISH_TREND_HINTS + _WEAK_BULLISH_TREND_HINTS,
+        )
+        if len(filtered_signal_reasons) != len(signal_reasons):
+            prompt_notes.append("当前技术结构偏空，已剔除与空头主判断直接冲突的看多结构理由。")
+        signal_reasons = filtered_signal_reasons
+        prompt_notes.append(
+            "若新闻、业绩或政策催化偏多，只能表述为“事件先行、技术待确认”或“基本面偏多，但技术面尚未确认”，严禁写成确定性买点。"
+        )
+    elif trend_direction == "bullish":
+        filtered_signal_reasons = _filter_conflicting_trend_items(
+            signal_reasons,
+            _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS,
+        )
+        if len(filtered_signal_reasons) != len(signal_reasons):
+            prompt_notes.append("当前技术结构偏多，已剔除与多头主判断直接冲突的空头结构理由。")
+        signal_reasons = filtered_signal_reasons
+        filtered_risk_factors = _filter_conflicting_trend_items(
+            risk_factors,
+            _BEARISH_TREND_HINTS + _WEAK_BEARISH_TREND_HINTS,
+        )
+        if len(filtered_risk_factors) != len(risk_factors):
+            prompt_notes.append("当前技术结构偏多，已剔除与多头主判断直接冲突的空头结构风险表述。")
+        risk_factors = filtered_risk_factors
+
+    parsed_volume_change = _safe_float(volume_change_ratio, default=math.nan)
+    if math.isfinite(parsed_volume_change) and parsed_volume_change > 10:
+        prompt_notes.append(
+            f"成交量较昨日变化约 {parsed_volume_change:.2f} 倍，可能存在异常数据或一次性冲量；量能信号必须降权解读，不能机械视为强确认。"
+        )
+
+    trend_dict["signal_reasons"] = signal_reasons
+    trend_dict["risk_factors"] = risk_factors
+    trend_dict["prompt_consistency_notes"] = prompt_notes
+    trend_dict["prompt_trend_direction"] = trend_direction
+    return trend_dict
 
 
 def _derive_chip_health(profit_ratio: float, concentration_90: float, language: str = "zh") -> str:
@@ -453,7 +712,7 @@ class AnalysisResult:
         return self.operation_advice
 
     def get_sniper_points(self) -> Dict[str, str]:
-        """获取狙击点位"""
+        """获取作战计划点位"""
         if self.dashboard and 'battle_plan' in self.dashboard:
             return self.dashboard['battle_plan'].get('sniper_points', {})
         return {}
@@ -583,10 +842,10 @@ class GeminiAnalyzer:
 
         "battle_plan": {
             "sniper_points": {
-                "ideal_buy": "理想买入点：XX元（在MA5附近）",
-                "secondary_buy": "次优买入点：XX元（在MA10附近）",
-                "stop_loss": "止损位：XX元（跌破MA20或X%）",
-                "take_profit": "目标位：XX元（前高/整数关口）"
+                "ideal_buy": "买入区：XX元（在MA5附近）",
+                "secondary_buy": "加仓区：XX元（在MA10附近）",
+                "stop_loss": "止损线：XX元（跌破MA20或X%）",
+                "take_profit": "目标区：XX元（前高/整数关口）"
             },
             "position_strategy": {
                 "suggested_position": "建议仓位：X成",
@@ -733,10 +992,10 @@ class GeminiAnalyzer:
 
         "battle_plan": {
             "sniper_points": {
-                "ideal_buy": "理想入场位：XX元（满足主要技能触发条件）",
-                "secondary_buy": "次优入场位：XX元（更保守或确认后执行）",
-                "stop_loss": "止损位：XX元（失效条件或X%风险）",
-                "take_profit": "目标位：XX元（按阻力位/风险回报比制定）"
+                "ideal_buy": "买入区：XX元（满足主要技能触发条件）",
+                "secondary_buy": "加仓区：XX元（更保守或确认后执行）",
+                "stop_loss": "止损线：XX元（失效条件或X%风险）",
+                "take_profit": "目标区：XX元（按阻力位/风险回报比制定）"
             },
             "position_strategy": {
                 "suggested_position": "建议仓位：X成",
@@ -788,7 +1047,7 @@ class GeminiAnalyzer:
 
 ### 买入（60-79分）：
 - ✅ 主信号偏积极，但仍有少量待确认项
-- ✅ 允许存在可控风险或次优入场点
+- ✅ 允许存在可控风险或备选加仓条件
 - ✅ 需要在报告中明确补充观察条件
 
 ### 观望（40-59分）：
@@ -1146,6 +1405,7 @@ class GeminiAnalyzer:
         system_prompt: Optional[str] = None,
         stream: bool = False,
         stream_progress_callback: Optional[Callable[[int], None]] = None,
+        response_validator: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
         """Call LLM via litellm with fallback across configured models.
 
@@ -1176,6 +1436,9 @@ class GeminiAnalyzer:
         use_channel_router = self._has_channel_config(config)
 
         last_error = None
+        last_response_text: Optional[str] = None
+        last_model: Optional[str] = None
+        last_usage: Dict[str, Any] = {}
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
         router_model_names = set(get_configured_llm_models(config.llm_model_list))
         for model in models_to_try:
@@ -1199,6 +1462,8 @@ class GeminiAnalyzer:
                 if extra:
                     call_kwargs["extra_body"] = extra
 
+                _stream_text: Optional[str] = None
+                _stream_usage: Dict[str, Any] = {}
                 if stream:
                     try:
                         stream_response = self._dispatch_litellm_completion(
@@ -1208,12 +1473,11 @@ class GeminiAnalyzer:
                             use_channel_router=use_channel_router,
                             router_model_names=router_model_names,
                         )
-                        response_text, usage = self._consume_litellm_stream(
+                        _stream_text, _stream_usage = self._consume_litellm_stream(
                             stream_response,
                             model=model,
                             progress_callback=stream_progress_callback,
                         )
-                        return response_text, model, usage
                     except _LiteLLMStreamError as exc:
                         if exc.partial_received:
                             logger.warning(
@@ -1235,6 +1499,14 @@ class GeminiAnalyzer:
                             exc,
                         )
 
+                if _stream_text is not None:
+                    last_response_text = _stream_text
+                    last_model = model
+                    last_usage = _stream_usage
+                    if response_validator is not None:
+                        response_validator(_stream_text)
+                    return _stream_text, model, _stream_usage
+
                 response = self._dispatch_litellm_completion(
                     model,
                     call_kwargs,
@@ -1244,8 +1516,14 @@ class GeminiAnalyzer:
                 )
 
                 if response and response.choices and response.choices[0].message.content:
+                    content = response.choices[0].message.content
                     usage = self._normalize_usage(getattr(response, "usage", None))
-                    return (response.choices[0].message.content, model, usage)
+                    last_response_text = content
+                    last_model = model
+                    last_usage = usage
+                    if response_validator is not None:
+                        response_validator(content)
+                    return (content, model, usage)
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
@@ -1253,7 +1531,12 @@ class GeminiAnalyzer:
                 last_error = e
                 continue
 
-        raise Exception(f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}")
+        raise _AllModelsFailedError(
+            f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}",
+            last_response_text=last_response_text,
+            last_model=last_model,
+            last_usage=last_usage,
+        )
 
     def generate_text(
         self,
@@ -1391,13 +1674,27 @@ class GeminiAnalyzer:
 
             while True:
                 start_time = time.time()
-                response_text, model_used, llm_usage = self._call_litellm(
-                    current_prompt,
-                    generation_config,
-                    system_prompt=system_prompt,
-                    stream=True,
-                    stream_progress_callback=stream_progress_callback,
-                )
+                try:
+                    response_text, model_used, llm_usage = self._call_litellm(
+                        current_prompt,
+                        generation_config,
+                        system_prompt=system_prompt,
+                        stream=True,
+                        stream_progress_callback=stream_progress_callback,
+                        response_validator=self._validate_json_response,
+                    )
+                except _AllModelsFailedError as exc:
+                    if exc.last_response_text is not None:
+                        logger.warning(
+                            "[LLM JSON] %s(%s): all models returned invalid JSON, using text fallback",
+                            name,
+                            code,
+                        )
+                        response_text = exc.last_response_text
+                        model_used = exc.last_model
+                        llm_usage = exc.last_usage
+                    else:
+                        raise
                 elapsed = time.time() - start_time
 
                 # 记录响应信息
@@ -1420,6 +1717,7 @@ class GeminiAnalyzer:
                 result.market_snapshot = self._build_market_snapshot(context)
                 result.model_used = model_used
                 result.report_language = report_language
+                self._ensure_sniper_points(result, context)
 
                 # 内容完整性校验（可选）
                 if not config.report_integrity_enabled:
@@ -1557,6 +1855,10 @@ class GeminiAnalyzer:
 | 60日涨跌幅 | {rt.get('change_60d', 'N/A')}% | 中期表现 |
 """
 
+        portfolio_position = context.get("portfolio_position") if isinstance(context, dict) else None
+        if isinstance(portfolio_position, dict) and portfolio_position.get("has_position"):
+            prompt += self._format_portfolio_position_prompt(portfolio_position, report_language)
+
         # 添加财报与分红（价值投资口径）
         fundamental_context = context.get("fundamental_context") if isinstance(context, dict) else None
         earnings_block = (
@@ -1619,7 +1921,11 @@ class GeminiAnalyzer:
         
         # 添加趋势分析结果（仅隐式内建 bull_trend 默认回退保留旧口径）
         if 'trend_analysis' in context:
-            trend = context['trend_analysis']
+            trend = _sanitize_trend_analysis_for_prompt(
+                context['trend_analysis'],
+                volume_change_ratio=context.get('volume_change_ratio'),
+            )
+            consistency_notes = trend.get('prompt_consistency_notes', [])
             if use_legacy_default_prompt:
                 bias_warning = "🚨 超过5%，严禁追高！" if trend.get('bias_ma5', 0) > 5 else "✅ 安全范围"
                 prompt += f"""
@@ -1641,6 +1947,12 @@ class GeminiAnalyzer:
 
 **风险因素**：
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
+"""
+                if consistency_notes:
+                    prompt += f"""
+
+**一致性约束**：
+{chr(10).join('- ' + note for note in consistency_notes)}
 """
             else:
                 bias_warning = (
@@ -1668,6 +1980,56 @@ class GeminiAnalyzer:
 **风险因素**：
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
 """
+                if consistency_notes:
+                    prompt += f"""
+
+**一致性约束**：
+{chr(10).join('- ' + note for note in consistency_notes)}
+"""
+
+            extra_indicator_lines = [
+                ("ADX/DMI", trend.get("adx_signal")),
+                ("MFI", trend.get("mfi_signal")),
+                ("CCI", trend.get("cci_signal")),
+                ("ROC", trend.get("roc_signal")),
+                ("唐奇安通道", trend.get("donchian_signal")),
+                ("Williams %R", trend.get("williams_signal")),
+                ("StochRSI", trend.get("stoch_rsi_signal")),
+                ("CMF", trend.get("cmf_signal")),
+                ("VWAP", trend.get("vwap_signal")),
+            ]
+            extra_indicator_text = "\n".join(
+                f"- **{name}**：{signal}"
+                for name, signal in extra_indicator_lines
+                if signal
+            )
+            if extra_indicator_text:
+                prompt += f"""
+#### 扩展指标过滤（辅助，不单独触发买卖）
+{extra_indicator_text}
+"""
+
+            if trend.get("indicator_consensus_signal"):
+                consensus_details = trend.get("indicator_consensus_details") or []
+                consensus_detail_text = "\n".join(
+                    f"- {detail}" for detail in consensus_details if detail
+                )
+                prompt += f"""
+#### 多指标共振摘要（辅助，不直接覆盖系统评分）
+- 结论：{trend.get("indicator_consensus_signal")}
+- 共振分：{trend.get("indicator_consensus_score", 0):+.1f}
+- 数量：偏多 {trend.get("indicator_bullish_count", 0)} / 偏空 {trend.get("indicator_bearish_count", 0)} / 中性 {trend.get("indicator_neutral_count", 0)}
+{consensus_detail_text}
+"""
+
+            sniper_seed = self._build_sniper_points_from_context(context)
+            prompt += f"""
+#### 系统预估作战计划点位（必须在最终 JSON 中保留或给出更合理替代）
+- 买入区：{sniper_seed.get("ideal_buy", no_data_text)}
+- 加仓区：{sniper_seed.get("secondary_buy", no_data_text)}
+- 止损线：{sniper_seed.get("stop_loss", no_data_text)}
+- 目标区：{sniper_seed.get("take_profit", no_data_text)}
+"""
         
         # 添加昨日对比数据
         if 'yesterday' in context:
@@ -1676,6 +2038,11 @@ class GeminiAnalyzer:
 ### 量价变化
 - 成交量较昨日变化：{volume_change}倍
 - 价格较昨日变化：{context.get('price_change_ratio', 'N/A')}%
+"""
+            parsed_volume_change = _safe_float(volume_change, default=math.nan)
+            if math.isfinite(parsed_volume_change) and parsed_volume_change > 10:
+                prompt += """
+- ⚠️ 量能异常提示：成交量较昨日放大超过10倍，可能受异常数据或一次性冲量影响，必须降权解读，不能机械视为强确认信号
 """
         
         # 添加新闻搜索结果（重点区域）
@@ -1777,9 +2144,11 @@ class GeminiAnalyzer:
 - **股票名称**：必须输出正确的中文全称（如"贵州茅台"而非"股票600519"）
 - **核心结论**：一句话说清该买/该卖/该等
 - **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
-- **具体狙击点位**：买入价、止损价、目标价（精确到分）
+- **作战计划点位**：`dashboard.battle_plan.sniper_points` 四个字段必须全部有值，禁止留空、null、N/A
+- **点位口径**：四个字段仍固定输出，但显示名会按场景动态切换；买入/看多时按“首笔建仓区/确认加仓区/破位止损线/分批止盈区”写；卖出/看空时 `ideal_buy` 写“暂不接回/重新评估线”，`secondary_buy` 写“确认转强线”，`stop_loss` 写“立即减仓/离场或持仓防守线”，`take_profit` 只能写“反抽出局线/不设目标”，严禁写成止盈目标
 - **检查清单**：每项用 ✅/⚠️/❌ 标记
 - **消息面时间合规**：`latest_news`、`risk_alerts`、`positive_catalysts` 不得包含超出近{news_window_days}日或时间未知的信息
+- **技术面一致性**：严禁把“空头排列”和“多头排列”等互斥结论同时当作有效依据；若基本面/事件面与技术面冲突，必须明确写“事件先行、技术待确认”或“基本面偏多，但技术面尚未确认”
 
 请输出完整的 JSON 格式决策仪表盘。"""
 
@@ -1845,6 +2214,198 @@ class GeminiAnalyzer:
             return f"{float(value):.2f}"
         except (TypeError, ValueError):
             return 'N/A'
+
+    def _format_portfolio_position_prompt(
+        self,
+        position: Dict[str, Any],
+        report_language: str = "zh",
+    ) -> str:
+        """Render current holding context into the LLM prompt."""
+        currency = position.get("currency") or "CNY"
+        accounts = position.get("accounts") if isinstance(position.get("accounts"), list) else []
+        account_lines = []
+        for account in accounts[:6]:
+            if not isinstance(account, dict):
+                continue
+            account_lines.append(
+                "| {account_name} | {quantity} | {avg_cost} | {last_price} | {market_value} | {pnl} | {pnl_pct} |".format(
+                    account_name=account.get("account_name") or account.get("account_id") or "账户",
+                    quantity=account.get("quantity", "N/A"),
+                    avg_cost=self._format_price(account.get("avg_cost")),
+                    last_price=self._format_price(account.get("last_price")),
+                    market_value=self._format_amount(account.get("market_value")),
+                    pnl=self._format_amount(account.get("unrealized_pnl")),
+                    pnl_pct=self._format_percent(account.get("unrealized_pnl_pct")),
+                )
+            )
+        account_detail = "\n".join(account_lines) if account_lines else "| 合计 | N/A | N/A | N/A | N/A | N/A | N/A |"
+
+        if normalize_report_language(report_language) == "en":
+            return f"""
+
+### Current Portfolio Position
+| Metric | Value |
+|------|------|
+| Position source date | {position.get('as_of', 'N/A')} |
+| Quantity | {position.get('quantity', 'N/A')} |
+| Average cost | {self._format_price(position.get('avg_cost'))} |
+| Latest price | {self._format_price(position.get('last_price'))} |
+| Cost basis | {self._format_amount(position.get('cost_basis'))} {currency} |
+| Market value | {self._format_amount(position.get('market_value'))} {currency} |
+| Unrealized P/L | {self._format_amount(position.get('unrealized_pnl'))} {currency} |
+| Unrealized P/L % | {self._format_percent(position.get('unrealized_pnl_pct'))} |
+| Portfolio weight | {self._format_percent(position.get('weight_pct'))} |
+
+Account breakdown:
+| Account | Quantity | Avg cost | Latest price | Market value | Unrealized P/L | P/L % |
+|------|------:|------:|------:|------:|------:|------:|
+{account_detail}
+
+Additional requirement: when writing `dashboard.core_conclusion.position_advice.has_position`,
+combine the user's actual cost, unrealized P/L, position weight, stop-loss level,
+and take-profit level. The answer must be an actionable holding decision rather
+than generic stock analysis.
+"""
+
+        return f"""
+
+### 当前持仓信息（必须纳入持仓者建议）
+| 指标 | 数值 |
+|------|------|
+| 持仓日期 | {position.get('as_of', 'N/A')} |
+| 持仓数量 | {position.get('quantity', 'N/A')} |
+| 持仓均价 | {self._format_price(position.get('avg_cost'))} |
+| 最新价格 | {self._format_price(position.get('last_price'))} |
+| 成本金额 | {self._format_amount(position.get('cost_basis'))} {currency} |
+| 当前市值 | {self._format_amount(position.get('market_value'))} {currency} |
+| 浮动盈亏 | {self._format_amount(position.get('unrealized_pnl'))} {currency} |
+| 浮动盈亏率 | {self._format_percent(position.get('unrealized_pnl_pct'))} |
+| 组合仓位占比 | {self._format_percent(position.get('weight_pct'))} |
+
+账户拆分：
+| 账户 | 数量 | 均价 | 最新价 | 市值 | 浮盈亏 | 盈亏率 |
+|------|------:|------:|------:|------:|------:|------:|
+{account_detail}
+
+额外要求：`dashboard.core_conclusion.position_advice.has_position`
+必须结合上述真实持仓成本、浮盈亏率、仓位占比、止损线和目标区给出操作建议。
+不要只说“可持有/可关注”，要明确是继续持有、减仓、止损、做T、等待加仓，还是不再加仓。
+"""
+
+    @staticmethod
+    def _coerce_number(value: Any) -> Optional[float]:
+        """Convert a value to a positive finite number when possible."""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or number <= 0:
+            return None
+        return number
+
+    def _first_number(self, *values: Any) -> Optional[float]:
+        """Return the first usable positive number from a sequence."""
+        for value in values:
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    number = self._coerce_number(item)
+                    if number is not None:
+                        return number
+                continue
+            number = self._coerce_number(value)
+            if number is not None:
+                return number
+        return None
+
+    def _build_sniper_points_from_context(
+        self,
+        context: Dict[str, Any],
+        result: Optional[AnalysisResult] = None,
+    ) -> Dict[str, str]:
+        """Build deterministic sniper levels from price and MA data as a safety net."""
+        today = context.get("today", {}) or {}
+        realtime = context.get("realtime", {}) or {}
+        trend = context.get("trend_analysis", {}) or {}
+
+        current = self._first_number(
+            realtime.get("price"),
+            trend.get("current_price"),
+            today.get("close"),
+        )
+        ma5 = self._first_number(trend.get("ma5"), today.get("ma5"))
+        ma10 = self._first_number(trend.get("ma10"), today.get("ma10"))
+        ma20 = self._first_number(trend.get("ma20"), today.get("ma20"))
+        support = self._first_number(trend.get("support_levels"))
+
+        resistance_values = [
+            self._coerce_number(item)
+            for item in (trend.get("resistance_levels") or [])
+        ]
+        resistance_values = [item for item in resistance_values if item is not None]
+        if current is not None:
+            resistance_values = [item for item in resistance_values if item > current]
+        decision_type = (getattr(result, "decision_type", "") if result else "").lower()
+        if decision_type == "sell" and current is not None:
+            near_resistance = [
+                item for item in (ma5, ma10)
+                if item is not None and item > current
+            ]
+            resistance_values = sorted([*near_resistance, *resistance_values])
+
+        ideal = ma5 or current or support or ma10 or ma20
+        secondary = ma10 or support or (ideal * 0.98 if ideal else None)
+        stop_base = ma20 or support or (current * 0.93 if current else None)
+        if current is not None and stop_base is not None and stop_base >= current:
+            stop_base = current * 0.95
+        stop_loss = stop_base * 0.98 if stop_base else None
+
+        if resistance_values:
+            take_profit = min(resistance_values)
+        elif current is not None:
+            take_profit = current * 1.08
+        elif ideal is not None:
+            take_profit = ideal * 1.08
+        else:
+            take_profit = None
+
+        def price(value: Optional[float]) -> str:
+            return f"{value:.2f}元" if value is not None else "数据不足"
+
+        if decision_type == "sell":
+            ideal_text = f"暂不接回；重新站回MA5附近 {price(ideal)} 后再评估"
+            secondary_text = f"确认转强：站稳MA10附近 {price(secondary)} 且止跌后再看"
+        else:
+            ideal_text = f"买入区：{price(ideal)}（MA5附近，优先等回踩或站稳确认）"
+            secondary_text = f"加仓区：{price(secondary)}（MA10/支撑附近，更保守）"
+
+        return {
+            "ideal_buy": ideal_text,
+            "secondary_buy": secondary_text,
+            "stop_loss": f"止损线：{price(stop_loss)}（跌破MA20/支撑后风控）",
+            "take_profit": (
+                f"反抽出局线：{price(take_profit)}附近（不是止盈目标）"
+                if decision_type == "sell"
+                else f"目标区：{price(take_profit)}（压力位或约8%风险回报目标）"
+            ),
+        }
+
+    def _ensure_sniper_points(self, result: AnalysisResult, context: Dict[str, Any]) -> None:
+        """Ensure the dashboard always has visible sniper levels for API/UI consumers."""
+        if not result.dashboard or not isinstance(result.dashboard, dict):
+            result.dashboard = {}
+        battle = result.dashboard.setdefault("battle_plan", {})
+        if not isinstance(battle, dict):
+            battle = {}
+            result.dashboard["battle_plan"] = battle
+        sniper_points = battle.setdefault("sniper_points", {})
+        if not isinstance(sniper_points, dict):
+            sniper_points = {}
+            battle["sniper_points"] = sniper_points
+
+        fallback = self._build_sniper_points_from_context(context, result)
+        for key, value in fallback.items():
+            if _is_value_placeholder(sniper_points.get(key)):
+                sniper_points[key] = value
 
     def _build_market_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """构建当日行情快照（展示用）"""
@@ -1914,8 +2475,8 @@ class GeminiAnalyzer:
                     lines.append("- dashboard.core_conclusion.one_sentence: one-line decision")
                 elif f == "dashboard.intelligence.risk_alerts":
                     lines.append("- dashboard.intelligence.risk_alerts: risk alert list (can be empty)")
-                elif f == "dashboard.battle_plan.sniper_points.stop_loss":
-                    lines.append("- dashboard.battle_plan.sniper_points.stop_loss: stop-loss level")
+                elif f.startswith("dashboard.battle_plan.sniper_points."):
+                    lines.append(f"- {f}: concrete trade level")
             return "\n".join(lines)
 
         lines = ["### 补全要求：请在上方分析基础上补充以下必填内容，并输出完整 JSON："]
@@ -1930,8 +2491,15 @@ class GeminiAnalyzer:
                 lines.append("- dashboard.core_conclusion.one_sentence: 一句话决策")
             elif f == "dashboard.intelligence.risk_alerts":
                 lines.append("- dashboard.intelligence.risk_alerts: 风险警报列表（可为空数组）")
-            elif f == "dashboard.battle_plan.sniper_points.stop_loss":
-                lines.append("- dashboard.battle_plan.sniper_points.stop_loss: 止损价")
+            elif f.startswith("dashboard.battle_plan.sniper_points."):
+                labels = {
+                    "ideal_buy": "买入区",
+                    "secondary_buy": "加仓区",
+                    "stop_loss": "止损线",
+                    "take_profit": "目标区",
+                }
+                key = f.rsplit(".", 1)[-1]
+                lines.append(f"- {f}: {labels.get(key, '具体点位')}，必须给具体价格或明确等待条件")
         return "\n".join(lines)
 
     def _build_integrity_retry_prompt(
@@ -2088,6 +2656,24 @@ class GeminiAnalyzer:
         json_str = repair_json(json_str)
         
         return json_str
+
+    def _validate_json_response(self, text: str) -> None:
+        """Validate that text contains a parseable JSON object."""
+        cleaned = text
+        if "```json" in cleaned:
+            cleaned = cleaned.replace("```json", "").replace("```", "")
+        elif "```" in cleaned:
+            cleaned = cleaned.replace("```", "")
+
+        json_start = cleaned.find("{")
+        json_end = cleaned.rfind("}") + 1
+
+        if json_start < 0 or json_end <= json_start:
+            raise ValueError("No JSON object found in LLM response")
+
+        json_str = cleaned[json_start:json_end]
+        json_str = self._fix_json_string(json_str)
+        json.loads(json_str)
     
     def _parse_text_response(
         self, 

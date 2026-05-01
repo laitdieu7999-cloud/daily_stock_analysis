@@ -22,6 +22,8 @@ const isWindows = process.platform === 'win32';
 const appRootDev = path.resolve(__dirname, '..', '..');
 const GITHUB_OWNER = 'ZhuLinsen';
 const GITHUB_REPO = 'daily_stock_analysis';
+const DESKTOP_STATE_DIR_NAME = 'Daily Stock Analysis';
+const LEGACY_ELECTRON_USER_DATA_DIR_NAME = 'daily-stock-analysis-desktop';
 const RELEASES_PAGE_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
 const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
@@ -339,12 +341,89 @@ function resolveEnvExamplePath() {
   return path.join(appRootDev, '.env.example');
 }
 
+function resolveLegacyPackagedAppDir() {
+  return path.dirname(app.getPath('exe'));
+}
+
+function resolvePackagedMacStateDir() {
+  return path.join(app.getPath('appData'), DESKTOP_STATE_DIR_NAME);
+}
+
+function applyDesktopStatePaths() {
+  if (!app.isPackaged || process.platform !== 'darwin') {
+    return;
+  }
+
+  if (typeof app.setPath === 'function') {
+    app.setPath('userData', resolvePackagedMacStateDir());
+  }
+}
+
 function resolveAppDir() {
+  if (process.env.DSA_APP_DIR && process.env.DSA_APP_DIR.trim()) {
+    return process.env.DSA_APP_DIR.trim();
+  }
+
   if (app.isPackaged) {
-    // exe 所在目录
-    return path.dirname(app.getPath('exe'));
+    // macOS 下若写入 .app 包内部，升级或替换 app 时会丢失配置/数据库。
+    // 统一改为 userData，Windows 继续保持便携式同目录行为。
+    if (process.platform === 'darwin') {
+      return resolvePackagedMacStateDir();
+    }
+    return resolveLegacyPackagedAppDir();
   }
   return app.getPath('userData');
+}
+
+function ensureDirectory(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function copyIfMissing(sourcePath, targetPath) {
+  if (!fs.existsSync(sourcePath) || fs.existsSync(targetPath)) {
+    return false;
+  }
+
+  ensureDirectory(path.dirname(targetPath));
+  const sourceStat = fs.statSync(sourcePath);
+  if (sourceStat.isDirectory()) {
+    fs.cpSync(sourcePath, targetPath, { recursive: true });
+  } else {
+    fs.copyFileSync(sourcePath, targetPath);
+  }
+  return true;
+}
+
+function migrateLegacyPackagedState(appDir) {
+  if (!app.isPackaged || process.platform !== 'darwin') {
+    return;
+  }
+
+  const candidateDirs = [
+    resolveLegacyPackagedAppDir(),
+    path.join(app.getPath('appData'), LEGACY_ELECTRON_USER_DATA_DIR_NAME),
+  ].filter((candidate, index, self) => candidate && self.indexOf(candidate) === index);
+
+  const migrated = [];
+  for (const legacyDir of candidateDirs) {
+    if (!legacyDir || legacyDir === appDir || !fs.existsSync(legacyDir)) {
+      continue;
+    }
+
+    for (const relativePath of ['.env', path.join('data', 'stock_analysis.db'), 'logs', 'Local Storage', 'Preferences']) {
+      const sourcePath = path.join(legacyDir, relativePath);
+      const targetPath = path.join(appDir, relativePath);
+      if (copyIfMissing(sourcePath, targetPath)) {
+        migrated.push(`${relativePath}<=${legacyDir}`);
+      }
+    }
+  }
+
+  if (migrated.length) {
+    logLine(`[startup] migrated legacy macOS desktop state into ${appDir}: ${migrated.join(', ')}`);
+  }
 }
 
 function resolveBackendPath() {
@@ -366,14 +445,13 @@ function resolveBackendPath() {
 }
 
 function initLogging() {
-  const appDir = app.isPackaged ? path.dirname(app.getPath('exe')) : app.getPath('userData');
+  const appDir = resolveAppDir();
+  ensureDirectory(appDir);
   logFilePath = path.join(appDir, 'logs', 'desktop.log');
   
   // 确保日志目录存在
   const logDir = path.dirname(logFilePath);
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
+  ensureDirectory(logDir);
   
   logLine('Desktop app starting');
 }
@@ -630,6 +708,8 @@ function startBackend({ port, envFile, dbPath, logDir }) {
     ENV_FILE: envFile,
     DATABASE_PATH: dbPath,
     LOG_DIR: logDir,
+    WEBUI_HOST: '127.0.0.1',
+    WEBUI_PORT: String(port),
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',
     SCHEDULE_ENABLED: 'false',
@@ -885,7 +965,9 @@ async function createWindow() {
   };
   nativeTheme.on('updated', applyThemeBackground);
   mainWindow.once('closed', () => {
+    logStartup('BrowserWindow closed');
     nativeTheme.removeListener('updated', applyThemeBackground);
+    mainWindow = null;
   });
 
   const webViewStartedAt = Date.now();
@@ -913,6 +995,8 @@ async function createWindow() {
   });
 
   const appDir = resolveAppDir();
+  ensureDirectory(appDir);
+  migrateLegacyPackagedState(appDir);
   const envPath = path.join(appDir, '.env');
   ensureEnvFile(envPath);
   logStartup(`Env file ready: ${envPath}`);
@@ -924,6 +1008,8 @@ async function createWindow() {
 
   const dbPath = path.join(appDir, 'data', 'stock_analysis.db');
   const logDir = path.join(appDir, 'logs');
+  ensureDirectory(path.dirname(dbPath));
+  ensureDirectory(logDir);
 
   try {
     const launchInfo = startBackend({ port, envFile: envPath, dbPath, logDir });
@@ -1014,6 +1100,8 @@ async function createWindow() {
   }
 }
 
+applyDesktopStatePaths();
+
 app.whenReady().then(createWindow);
 
 app.on('activate', () => {
@@ -1023,13 +1111,16 @@ app.on('activate', () => {
 });
 
 app.on('window-all-closed', () => {
-  stopBackend();
   if (process.platform !== 'darwin') {
+    stopBackend();
     app.quit();
+    return;
   }
+  logLine('[app] all windows closed on macOS; backend stays alive until app quit');
 });
 
 app.on('before-quit', () => {
+  logLine('[app] before-quit; stopping backend');
   stopBackend();
 });
 
@@ -1048,5 +1139,8 @@ module.exports = {
   fetchLatestReleaseJson,
   normalizeVersionString,
   parseSemver,
+  resolvePackagedMacStateDir,
+  resolveAppDir,
+  applyDesktopStatePaths,
   sanitizeReleaseUrl,
 };
