@@ -38,6 +38,7 @@ setup_env()
 def _ensure_litellm_log_defaults() -> None:
     """Keep LiteLLM quiet unless the user explicitly asks for debug logging."""
     os.environ.setdefault("LITELLM_LOG", "INFO")
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 
 
 _ensure_litellm_log_defaults()
@@ -2114,13 +2115,11 @@ def run_nightly_market_outlook(
         external_tactical_report=external_tactical_report,
         generated_at=now,
     )
-    paths = _persist_standalone_markdown_report(
+    paths = _persist_archive_markdown_report(
         report_date=report_date,
         content=content,
-        desktop_dir=Path.home() / "Desktop" / "每日分析报告" / "明日大盘预判",
         archive_dir=Path(__file__).resolve().parent / "reports" / "nightly_market_outlook_archive",
         filename_suffix="明日大盘预判",
-        desktop_keep_days=3,
     )
     comparison_paths = _archive_gemini_market_outlook_comparison(
         report_date=report_date,
@@ -2145,8 +2144,7 @@ def run_nightly_market_outlook(
         logger.info("[NightlyOutlook] 通知服务不可用，仅保存本地报告")
 
     logger.info(
-        "[NightlyOutlook] 已保存明日大盘预判: desktop=%s archive=%s comparison=%s",
-        paths.get("desktop_path", ""),
+        "[NightlyOutlook] 已保存明日大盘预判: archive=%s comparison=%s",
         paths.get("archive_path", ""),
         paths.get("comparison_path", ""),
     )
@@ -4033,13 +4031,11 @@ def run_full_analysis(
                     external_tactical_report=external_tactical_report,
                 )
                 if metaphysical_daily_report:
-                    metaphysical_daily_paths = _persist_standalone_markdown_report(
+                    metaphysical_daily_paths = _persist_archive_markdown_report(
                         report_date=report_date,
                         content=metaphysical_daily_report,
-                        desktop_dir=Path.home() / "Desktop" / "每日分析报告" / "玄学治理日报",
                         archive_dir=Path.cwd() / "reports" / "metaphysical_daily_archive",
                         filename_suffix="玄学治理日报",
-                        desktop_keep_days=3,
                     )
                 logger.info(
                     "已保存每日摘要报告: desktop=%s archive=%s index=%s refreshed=%s weekly=%s dashboard=%s monthly_review=%s monthly_dashboard=%s grouped=%s golden_dragon=%s overnight=%s scenario=%s adjustment=%s readiness=%s metaphysical_desktop=%s metaphysical_archive=%s",

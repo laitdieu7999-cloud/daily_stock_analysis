@@ -21,6 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# The launchd intraday job runs every minute. Avoid a remote LiteLLM cost-map
+# fetch on each short-lived process; the bundled local map is enough here.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+
 from src.config import get_config  # noqa: E402
 from src.core.trading_calendar import get_market_now, is_market_open  # noqa: E402
 from src.notification import NotificationBuilder, NotificationService  # noqa: E402

@@ -38,8 +38,8 @@ def _launchctl_print(label: str) -> str:
 
 def main() -> int:
     latest_signal = _read_json(PROJECT_ROOT / "reports" / "metaphysical_latest_signal.json")
-    daily_desktop = Path.home() / "Desktop" / "玄学治理日报"
-    latest_desktop = sorted(daily_desktop.glob("*_玄学治理日报.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    daily_archive = PROJECT_ROOT / "reports" / "metaphysical_daily_archive"
+    latest_daily_report = sorted(daily_archive.glob("*_玄学治理日报.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     stdout_log = LOG_DIR / "metaphysical-launchagent.stdout.log"
     stderr_log = LOG_DIR / "metaphysical-launchagent.stderr.log"
 
@@ -50,8 +50,8 @@ def main() -> int:
         "latest_signal_exists": latest_signal is not None,
         "latest_signal_date": (latest_signal.get("final_signal", {}).get("signal_date") if isinstance(latest_signal, dict) else None),
         "latest_signal_file_mtime": _fmt_ts(PROJECT_ROOT / "reports" / "metaphysical_latest_signal.json"),
-        "latest_desktop_report": str(latest_desktop[0]) if latest_desktop else None,
-        "latest_desktop_report_mtime": _fmt_ts(latest_desktop[0]) if latest_desktop else None,
+        "latest_daily_report": str(latest_daily_report[0]) if latest_daily_report else None,
+        "latest_daily_report_mtime": _fmt_ts(latest_daily_report[0]) if latest_daily_report else None,
         "stdout_log_exists": stdout_log.exists(),
         "stderr_log_exists": stderr_log.exists(),
         "stdout_log_mtime": _fmt_ts(stdout_log),

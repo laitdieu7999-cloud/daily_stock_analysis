@@ -7,7 +7,6 @@ REPORT_FILE="$PROJECT_ROOT/reports/gemini_daily.md"
 GOOGLE_DRIVE_SYNC_FILE="${GOOGLE_DRIVE_GEMINI_SYNC_FILE:-}"
 LATEST_SYNC_JSON="$PROJECT_ROOT/reports/metaphysical_latest_report_sync.json"
 
-DAILY_DESKTOP_DIR="$HOME/Desktop/玄学治理日报"
 DAILY_ARCHIVE_DIR="$PROJECT_ROOT/reports/metaphysical_daily_archive"
 WEEKLY_ARCHIVE_DIR="$PROJECT_ROOT/reports/metaphysical_weekly_archive"
 ACCURACY_ARCHIVE_DIR="$PROJECT_ROOT/reports/metaphysical_accuracy_archive"
@@ -17,7 +16,7 @@ LATEST_GOVERNANCE_JSON="$PROJECT_ROOT/reports/metaphysical_latest_governance.jso
 LATEST_STAGE_HEALTH_JSON="$PROJECT_ROOT/reports/metaphysical_latest_stage_health.json"
 LATEST_LOCAL_STORAGE_MIGRATION_JSON="$PROJECT_ROOT/reports/local_storage_latest_migration.json"
 
-mkdir -p "$DAILY_DESKTOP_DIR" "$DAILY_ARCHIVE_DIR" "$WEEKLY_ARCHIVE_DIR" "$ACCURACY_ARCHIVE_DIR"
+mkdir -p "$DAILY_ARCHIVE_DIR" "$WEEKLY_ARCHIVE_DIR" "$ACCURACY_ARCHIVE_DIR"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "missing python runtime: $PYTHON_BIN" >&2
@@ -57,18 +56,9 @@ DAILY_REPORT_NAME="${TODAY}_玄学治理日报.md"
 DAILY_REPORT_PATH="$DAILY_ARCHIVE_DIR/$DAILY_REPORT_NAME"
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/generate_metaphysical_daily_report.py" \
   --tactical-report-file "$REPORT_FILE" > "$DAILY_REPORT_PATH"
-cp "$DAILY_REPORT_PATH" "$DAILY_DESKTOP_DIR/$DAILY_REPORT_NAME"
 
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/migrate_local_storage_archives.py" \
   --json > "$LATEST_LOCAL_STORAGE_MIGRATION_JSON"
-
-python3 - <<'PY'
-from pathlib import Path
-desktop_dir = Path.home() / "Desktop" / "玄学治理日报"
-reports = sorted(desktop_dir.glob("*_玄学治理日报.md"), key=lambda p: p.stat().st_mtime, reverse=True)
-for stale in reports[3:]:
-    stale.unlink(missing_ok=True)
-PY
 
 if [[ "$WEEKDAY" == "7" ]]; then
   "$PYTHON_BIN" "$PROJECT_ROOT/scripts/backfill_metaphysical_learning_outcomes.py"

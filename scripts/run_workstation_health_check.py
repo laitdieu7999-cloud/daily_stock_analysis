@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import date, datetime, timedelta
@@ -19,6 +20,8 @@ from typing import Any, Dict, List
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 
 from src.services.system_overview_service import SystemOverviewService  # noqa: E402
 
@@ -126,11 +129,24 @@ def _send_notification(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:
         push_error = str(exc)
 
-    script = f'display notification {json.dumps(message)} with title {json.dumps(title)}'
     macos_sent = False
     macos_error = ""
     try:
-        result = subprocess.run(["osascript", "-e", script], check=False, timeout=5)
+        result = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                "on run argv",
+                "-e",
+                "display notification (item 1 of argv) with title (item 2 of argv)",
+                "-e",
+                "end run",
+                message,
+                title,
+            ],
+            check=False,
+            timeout=5,
+        )
         macos_sent = result.returncode == 0
     except Exception as exc:
         macos_error = str(exc)

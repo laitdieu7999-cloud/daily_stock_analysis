@@ -58,13 +58,19 @@ class MainScheduleModeTestCase(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_ensure_litellm_log_defaults_preserves_existing_env(self) -> None:
-        with patch.dict(os.environ, {"LITELLM_LOG": "WARNING"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"LITELLM_LOG": "WARNING", "LITELLM_LOCAL_MODEL_COST_MAP": "false"},
+            clear=False,
+        ):
             main._ensure_litellm_log_defaults()
             self.assertEqual(os.environ["LITELLM_LOG"], "WARNING")
+            self.assertEqual(os.environ["LITELLM_LOCAL_MODEL_COST_MAP"], "false")
 
         with patch.dict(os.environ, {}, clear=True):
             main._ensure_litellm_log_defaults()
             self.assertEqual(os.environ["LITELLM_LOG"], "INFO")
+            self.assertEqual(os.environ["LITELLM_LOCAL_MODEL_COST_MAP"], "true")
 
     def _make_args(self, **overrides):
         defaults = {
@@ -647,19 +653,18 @@ class MainScheduleModeTestCase(unittest.TestCase):
              patch("main._resolve_next_cn_trading_date", return_value=date(2026, 4, 29)), \
              patch("main._load_fresh_gemini_tactical_reports", return_value=None), \
              patch(
-                 "main._persist_standalone_markdown_report",
-                 return_value={"desktop_path": "/tmp/2026-04-28_明日大盘预判.md", "archive_path": "/tmp/archive.md"},
+                 "main._persist_archive_markdown_report",
+                 return_value={"archive_path": "/tmp/archive.md"},
              ) as persist_report:
             paths = main.run_nightly_market_outlook(
                 config,
                 now=datetime(2026, 4, 28, 21, 45),
             )
 
-        self.assertEqual(paths["desktop_path"], "/tmp/2026-04-28_明日大盘预判.md")
+        self.assertEqual(paths["archive_path"], "/tmp/archive.md")
+        self.assertNotIn("desktop_path", paths)
         self.assertIs(market_payload_builder.call_args.kwargs["config"], config)
         self.assertEqual(persist_report.call_args.kwargs["filename_suffix"], "明日大盘预判")
-        self.assertEqual(persist_report.call_args.kwargs["desktop_dir"].name, "明日大盘预判")
-        self.assertEqual(persist_report.call_args.kwargs["desktop_dir"].parent.name, "每日分析报告")
         notifier.send.assert_called_once()
 
     def test_gemini_market_outlook_archive_builds_comparison(self) -> None:
