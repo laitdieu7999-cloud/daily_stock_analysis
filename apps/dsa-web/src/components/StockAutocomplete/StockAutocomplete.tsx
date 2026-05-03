@@ -15,7 +15,7 @@ import { SuggestionsList } from './SuggestionsList';
 import { cn } from '../../utils/cn';
 
 const AUTOCOMPLETE_INPUT_CLASS =
-  'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+  'input-surface input-focus-glow h-12 w-full rounded-2xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 
 export interface StockAutocompleteProps {
   /** Input value */

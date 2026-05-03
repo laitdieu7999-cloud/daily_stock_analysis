@@ -29,6 +29,23 @@ describe('ICAnnualizedPage', () => {
       spotPrice: 8299.05,
       mainContractCode: 'IC2606',
       fetchedAt: '2026-04-27T09:30:00',
+      optionProxy: {
+        boardTimestamp: '2026-04-27',
+        expiryYm: '2606',
+        expiryStyle: 'M',
+        qvixLatest: 21.23,
+        qvixPrev: 20.5,
+        qvixJumpPct: 3.56,
+        qvixZscore: 1.2,
+        atmStrike: 8.3,
+        atmPutPrice: 0.12,
+        otmPutStrike: 7.9,
+        otmPutPrice: 0.05,
+        putSkewRatio: 0.417,
+        atmPutCallVolumeRatio: 1.58,
+        expiryDaysToExpiry: 44,
+        rollWindowShifted: false,
+      },
       contracts: [
         {
           symbol: 'IC2606',
@@ -64,6 +81,8 @@ describe('ICAnnualizedPage', () => {
     expect(screen.getByText('M1-M2 状态')).toBeInTheDocument();
     expect(screen.getByText('结构正常')).toBeInTheDocument();
     expect(screen.getAllByText('+1.39%').length).toBeGreaterThan(0);
+    expect(screen.getByText('QVIX 21.23 / Skew 0.417')).toBeInTheDocument();
+    expect(screen.getByText('PCR 1.58 · 2606')).toBeInTheDocument();
     expect(screen.getByText(/IC 执行提示/)).toBeInTheDocument();
     expect(screen.queryByText('主力')).not.toBeInTheDocument();
   });

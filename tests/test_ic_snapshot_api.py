@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 import src.auth as auth
 from api.app import create_app
 from src.config import Config
-from src.market_data_fetcher import ICContractSnapshot, ICMarketSnapshotData
+from src.market_data_fetcher import ETFOptionProxyData, ICContractSnapshot, ICMarketSnapshotData
 from src.storage import DatabaseManager
 
 
@@ -68,6 +68,26 @@ class ICSnapshotApiTestCase(unittest.TestCase):
             spot_price=5800.0,
             main_contract_code="IC2505",
             fetched_at="2026-04-27T14:00:00",
+            option_proxy=ETFOptionProxyData(
+                board_timestamp="2026-04-27",
+                expiry_ym="2506",
+                expiry_style="M",
+                qvix_latest=21.23,
+                qvix_prev=20.5,
+                qvix_jump_pct=3.56,
+                qvix_zscore=1.2,
+                atm_strike=5.8,
+                atm_call_trade_code="MO2506-C-5800",
+                atm_call_price=0.18,
+                atm_put_trade_code="MO2506-P-5800",
+                atm_put_price=0.12,
+                otm_put_trade_code="MO2506-P-5500",
+                otm_put_strike=5.5,
+                otm_put_price=0.05,
+                put_skew_ratio=0.42,
+                atm_put_call_volume_ratio=1.58,
+                expiry_days_to_expiry=44,
+            ),
             contracts=[
                 ICContractSnapshot(
                     symbol="IC2505",
@@ -105,6 +125,9 @@ class ICSnapshotApiTestCase(unittest.TestCase):
         self.assertEqual(len(body["contracts"]), 2)
         self.assertEqual(body["contracts"][0]["symbol"], "IC2505")
         self.assertEqual(body["contracts"][1]["term_gap_days"], 35)
+        self.assertEqual(body["option_proxy"]["expiry_ym"], "2506")
+        self.assertEqual(body["option_proxy"]["qvix_latest"], 21.23)
+        self.assertEqual(body["option_proxy"]["atm_put_call_volume_ratio"], 1.58)
 
     def test_ic_snapshot_returns_503_when_fetch_fails(self) -> None:
         with patch(

@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useRef, useCallback, useEffect, useId, useMemo } from 'react';
+import { useRef, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { HistoryItem } from '../../types/analysis';
 import { normalizeStockCode, removeMarketSuffix } from '../../utils/normalizeQuery';
 import { Badge, Button, ScrollArea } from '../common';
@@ -95,10 +95,12 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   const loadMoreTriggerRef = useRef<HTMLDivElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const selectAllId = useId();
+  const [isManagingSelection, setIsManagingSelection] = useState(false);
 
   const selectedCount = sortedItems.filter((item) => selectedIds.has(item.id)).length;
   const allVisibleSelected = sortedItems.length > 0 && selectedCount === sortedItems.length;
   const someVisibleSelected = selectedCount > 0 && !allVisibleSelected;
+  const selectionMode = isManagingSelection || selectedCount > 0;
 
   // 使用 IntersectionObserver 检测滚动到底部
   const handleObserver = useCallback(
@@ -154,15 +156,32 @@ export const HistoryList: React.FC<HistoryListProps> = ({
             )}
             headingClassName="items-center"
             actions={
-              selectedCount > 0 ? (
-                <Badge variant="info" size="sm" className="history-selection-badge animate-in fade-in zoom-in duration-200">
-                  已选 {selectedCount}
-                </Badge>
+              sortedItems.length > 0 ? (
+                <>
+                  {selectedCount > 0 ? (
+                    <Badge variant="info" size="sm" className="history-selection-badge animate-in fade-in zoom-in duration-200">
+                      已选 {selectedCount}
+                    </Badge>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setIsManagingSelection((value) => !value)}
+                    className="rounded-full border border-border/70 bg-subtle/60 px-2.5 py-1 text-[11px] font-semibold text-secondary-text transition-colors hover:border-primary/30 hover:bg-primary/10 hover:text-primary"
+                  >
+                    {selectionMode ? '完成' : '管理'}
+                  </button>
+                </>
               ) : undefined
             }
           />
 
-          {sortedItems.length > 0 && (
+          {sortedItems.length > 0 ? (
+            <p className="rounded-xl border border-border/55 bg-subtle/40 px-2.5 py-2 text-[11px] leading-5 text-secondary-text">
+              优先显示持仓，再按减仓、买入、观望排序。
+            </p>
+          ) : null}
+
+          {sortedItems.length > 0 && selectionMode && (
             <div className="flex items-center gap-2">
               <label
                 className="flex flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 py-1"
@@ -203,11 +222,21 @@ export const HistoryList: React.FC<HistoryListProps> = ({
         ) : sortedItems.length === 0 ? (
           <DashboardStateBlock
             title="暂无历史分析记录"
-            description="完成首次分析后，这里会保留最近结果。"
+            description="新的分析会自动保存在这里；如果刚清空过历史，直接在顶部输入股票即可重新生成。"
             icon={(
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
+            )}
+            action={(
+              <div className="grid w-full gap-2 text-left text-[11px] text-secondary-text">
+                <div className="rounded-xl border border-border/60 bg-subtle/50 px-3 py-2">
+                  顶部输入代码：生成新报告
+                </div>
+                <div className="rounded-xl border border-border/60 bg-subtle/50 px-3 py-2">
+                  持仓页点击股票：自动回测并回到首页
+                </div>
+              </div>
             )}
           />
         ) : (
@@ -221,6 +250,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                   const key = toHoldingKey(item.stockCode);
                   return key ? (holdingCodes?.has(key) ?? false) : false;
                 })()}
+                selectionMode={selectionMode}
                 isChecked={selectedIds.has(item.id)}
                 isDeleting={isDeleting}
                 onToggleChecked={onToggleItemSelection}

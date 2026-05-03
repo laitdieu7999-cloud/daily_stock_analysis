@@ -80,6 +80,7 @@ type IcDeskState = {
   frontGapPct?: number | null;
   farAnchorPct?: number | null;
   putProxyLabel: string;
+  putProxyHint: string;
   actionHint: string;
 };
 
@@ -91,6 +92,13 @@ const buildIcDeskState = (snapshot: ICMarketSnapshot | null): IcDeskState => {
   const farA = contracts.length >= 4 ? contracts[2] : contracts[contracts.length - 2];
   const farB = contracts.length >= 4 ? contracts[3] : contracts[contracts.length - 1];
   const farAnchorPct = farA && farB ? farA.annualizedBasisPct - farB.annualizedBasisPct : null;
+  const optionProxy = snapshot?.optionProxy || null;
+  const putProxyLabel = optionProxy
+    ? `QVIX ${optionProxy.qvixLatest.toFixed(2)} / Skew ${optionProxy.putSkewRatio.toFixed(3)}`
+    : '期权代理未接入';
+  const putProxyHint = optionProxy
+    ? `PCR ${optionProxy.atmPutCallVolumeRatio == null ? '--' : optionProxy.atmPutCallVolumeRatio.toFixed(2)} · ${optionProxy.expiryYm}${optionProxy.rollWindowShifted ? ' 已避开末日轮' : ''}`
+    : 'PCR / 虚平认沽比后续接数据。';
 
   if (frontGapPct == null) {
     return {
@@ -98,7 +106,8 @@ const buildIcDeskState = (snapshot: ICMarketSnapshot | null): IcDeskState => {
       frontTone: 'border-border bg-surface/60 text-secondary-text',
       frontGapPct,
       farAnchorPct,
-      putProxyLabel: '期权代理未接入',
+      putProxyLabel,
+      putProxyHint,
       actionHint: '等待 IC 合约行情。Shadow 指标只记录，不强推送。',
     };
   }
@@ -108,7 +117,8 @@ const buildIcDeskState = (snapshot: ICMarketSnapshot | null): IcDeskState => {
       frontTone: 'border-rose-400/40 bg-rose-500/10 text-rose-200',
       frontGapPct,
       farAnchorPct,
-      putProxyLabel: '需查看500ETF认沽',
+      putProxyLabel: optionProxy ? putProxyLabel : '需查看500ETF认沽',
+      putProxyHint,
       actionHint: '近月贴水显著深于次月，优先人工确认是否需要保护；系统仅写 Shadow。',
     };
   }
@@ -118,7 +128,8 @@ const buildIcDeskState = (snapshot: ICMarketSnapshot | null): IcDeskState => {
       frontTone: 'border-amber-400/40 bg-amber-500/10 text-amber-200',
       frontGapPct,
       farAnchorPct,
-      putProxyLabel: '观察认沽价格比',
+      putProxyLabel: optionProxy ? putProxyLabel : '观察认沽价格比',
+      putProxyHint,
       actionHint: '前端斜率开始走陡，先看是否伴随现货弱势和认沽放量。',
     };
   }
@@ -127,7 +138,8 @@ const buildIcDeskState = (snapshot: ICMarketSnapshot | null): IcDeskState => {
     frontTone: 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200',
     frontGapPct,
     farAnchorPct,
-    putProxyLabel: '无需动作',
+    putProxyLabel: optionProxy ? putProxyLabel : '无需动作',
+    putProxyHint,
     actionHint: '期限结构未显示踩踏，继续按面板观察贴水和持仓计划。',
   };
 };
@@ -332,7 +344,7 @@ const ICAnnualizedPage: React.FC = () => {
           <div className="rounded-3xl border border-subtle bg-surface/60 p-4">
             <div className="text-xs text-secondary-text">500ETF认沽代理</div>
             <div className="mt-2 text-lg font-semibold text-foreground">{icDeskState.putProxyLabel}</div>
-            <div className="mt-1 text-xs text-secondary-text">PCR / 虚平认沽比后续接数据。</div>
+            <div className="mt-1 text-xs text-secondary-text">{icDeskState.putProxyHint}</div>
           </div>
         </div>
 

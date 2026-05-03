@@ -296,9 +296,8 @@ describe('HomePage', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText('开始分析')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '开始分析', level: 3 })).toBeInTheDocument();
-    expect(screen.getByText('输入股票代码进行分析，或从左侧选择历史报告查看。')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '开始分析', level: 3 })).toBeInTheDocument();
+    expect(screen.getByText(/输入股票代码进行分析，或从左侧选择历史报告查看/)).toBeInTheDocument();
     expect(screen.getByText('暂无历史分析记录')).toBeInTheDocument();
   });
 
@@ -321,7 +320,7 @@ describe('HomePage', () => {
 
     const input = await screen.findByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL');
     fireEvent.change(input, { target: { value: '600519' } });
-    fireEvent.click(screen.getByRole('button', { name: '分析' }));
+    fireEvent.click(screen.getByRole('button', { name: '开始分析' }));
 
     await waitFor(() => {
       expect(screen.getByText(/股票 600519 正在分析中/)).toBeInTheDocument();

@@ -1996,9 +1996,25 @@ textarea {
 .btn-primary:disabled,
 .btn-secondary:disabled {
   cursor: not-allowed;
-  opacity: 0.58;
   box-shadow: none;
   transform: none;
+}
+
+.btn-primary:disabled {
+  border-color: rgba(148, 163, 184, 0.32);
+  background: linear-gradient(135deg, rgba(226, 232, 240, 0.88), rgba(203, 213, 225, 0.82));
+  color: rgba(71, 85, 105, 0.82);
+  opacity: 1;
+}
+
+.dark .btn-primary:disabled {
+  border-color: rgba(148, 163, 184, 0.2);
+  background: linear-gradient(135deg, rgba(51, 65, 85, 0.68), rgba(30, 41, 59, 0.72));
+  color: rgba(203, 213, 225, 0.72);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.58;
 }
 
 :root:not(.dark) .portfolio-page .btn-primary:not(:disabled),

@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { backtestApi } from '../api/backtest';
 import { icApi, type ICMarketSnapshot } from '../api/ic';
 import { portfolioApi } from '../api/portfolio';
-import { ApiErrorAlert, ConfirmDialog, Button, EmptyState, InlineAlert } from '../components/common';
+import { ApiErrorAlert, ConfirmDialog, Button, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { HistoryList } from '../components/history';
@@ -107,6 +107,12 @@ const actionEyebrowClass =
 
 const actionPillClass =
   'rounded-full border border-slate-200 bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] dark:border-white/10 dark:bg-white/5 dark:text-secondary-text';
+
+const emptyActionClass =
+  'group flex min-h-[8rem] flex-col justify-between rounded-2xl border border-slate-200/85 bg-white/80 p-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.75),0_18px_36px_rgba(15,23,42,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:border-sky-200 hover:bg-white hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_24px_44px_rgba(15,23,42,0.09)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15 dark:border-white/10 dark:bg-card/75 dark:hover:border-cyan/35 dark:hover:bg-card/95';
+
+const emptyActionIconClass =
+  'mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-50 text-slate-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition-colors group-hover:border-sky-200 group-hover:bg-sky-50 group-hover:text-sky-700 dark:border-white/10 dark:bg-white/5 dark:text-secondary-text dark:group-hover:text-cyan';
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
@@ -363,6 +369,10 @@ const HomePage: React.FC = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
+            <div className="hidden shrink-0 xl:block">
+              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-secondary-text">今日工作台</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-secondary-text">输入名称即可，不必记代码</p>
+            </div>
             <div className="relative min-w-0 flex-1">
               <StockAutocomplete
                 value={query}
@@ -375,20 +385,20 @@ const HomePage: React.FC = () => {
                 className={inputError ? 'border-danger/50' : undefined}
               />
             </div>
-            <label className="flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-slate-200/90 bg-white/75 px-3 text-xs font-medium text-slate-600 shadow-soft-card select-none transition-colors hover:border-sky-200 hover:text-slate-950 dark:border-white/10 dark:bg-card/75 dark:text-secondary-text dark:hover:text-foreground">
+            <label className="flex h-12 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-2xl border border-slate-200/90 bg-white/75 px-3 text-xs font-medium text-slate-600 shadow-soft-card select-none transition-colors hover:border-sky-200 hover:text-slate-950 dark:border-white/10 dark:bg-card/75 dark:text-secondary-text dark:hover:text-foreground">
               <input
                 type="checkbox"
                 checked={notify}
                 onChange={(e) => setNotify(e.target.checked)}
                 className="h-3.5 w-3.5 rounded border-border accent-primary"
               />
-              推送通知
+              完成后提醒我
             </label>
             <button
               type="button"
               onClick={() => handleSubmitAnalysis()}
               disabled={!query || isAnalyzing}
-              className="btn-primary flex h-10 flex-shrink-0 items-center gap-1.5 whitespace-nowrap px-4"
+              className="btn-primary flex h-12 flex-shrink-0 items-center gap-1.5 whitespace-nowrap px-5"
             >
               {isAnalyzing ? (
                 <>
@@ -399,7 +409,7 @@ const HomePage: React.FC = () => {
                   分析中
                 </>
               ) : (
-                '分析'
+                '开始分析'
               )}
             </button>
           </div>
@@ -571,18 +581,84 @@ const HomePage: React.FC = () => {
                 <ReportSummary data={selectedReport} isHistory />
               </div>
             ) : (
-              <div className="flex min-h-full flex-col gap-4">
-                <div className="flex flex-1 items-center justify-center">
-                  <EmptyState
-                    title="开始分析"
-                    description="输入股票代码进行分析，或从左侧选择历史报告查看。"
-                    className="max-w-xl border-dashed"
-                    icon={(
-                      <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                      </svg>
-                    )}
-                  />
+              <div className="flex min-h-full flex-col justify-start py-4">
+                <div className="relative overflow-hidden rounded-[2rem] border border-slate-200/90 bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.12),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,252,0.92))] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_28px_80px_rgba(15,23,42,0.08)] dark:border-white/10 dark:bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.13),transparent_36%),linear-gradient(180deg,rgba(15,23,42,0.86),rgba(15,23,42,0.72))] md:p-7">
+                  <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-cyan/10 blur-3xl" />
+                  <div className="relative grid gap-6 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] xl:items-center">
+                    <div>
+                      <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-sky-200/80 bg-white/70 px-3 py-1 text-xs font-semibold text-sky-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] dark:border-cyan/25 dark:bg-white/5 dark:text-cyan">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        工作台待命
+                      </div>
+                      <h3 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-foreground">
+                        开始分析
+                      </h3>
+                      <p className="mt-3 max-w-xl text-sm leading-6 text-slate-600 dark:text-secondary-text">
+                        输入股票代码进行分析，或从左侧选择历史报告查看。当前没有打开的报告，可以先从持仓、IC 或问股入口进入。
+                      </p>
+                      <div className="mt-5 grid gap-2 text-xs text-slate-500 dark:text-secondary-text sm:grid-cols-3">
+                        <div className="rounded-xl border border-slate-200/75 bg-white/65 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+                          持仓：{holdingCodes.size > 0 ? `${holdingCodes.size} 只` : '未录入'}
+                        </div>
+                        <div className="rounded-xl border border-slate-200/75 bg-white/65 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+                          IC：{icActionState.label}
+                        </div>
+                        <div className="rounded-xl border border-slate-200/75 bg-white/65 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+                          报告：等待分析
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
+                      <button
+                        type="button"
+                        onClick={() => navigate('/portfolio')}
+                        className={emptyActionClass}
+                      >
+                        <span className={emptyActionIconClass}>
+                          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M10 6V5a2 2 0 012-2h0a2 2 0 012 2v1m-8 0h12a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2z" />
+                          </svg>
+                        </span>
+                        <span>
+                          <span className="block text-base font-bold text-slate-950 dark:text-foreground">从持仓开始</span>
+                          <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-secondary-text">检查当前持仓风险，再决定是否重新回测。</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => navigate('/ic-calculator')}
+                        className={emptyActionClass}
+                      >
+                        <span className={emptyActionIconClass}>
+                          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7 20V8m5 12V4m5 16v-7" />
+                          </svg>
+                        </span>
+                        <span>
+                          <span className="block text-base font-bold text-slate-950 dark:text-foreground">查看 IC</span>
+                          <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-secondary-text">快速判断期现差、到期天数和年化区间。</span>
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => navigate('/chat')}
+                        className={emptyActionClass}
+                      >
+                        <span className={emptyActionIconClass}>
+                          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4.255-.95L3 20l1.3-3.47A7.35 7.35 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                          </svg>
+                        </span>
+                        <span>
+                          <span className="block text-base font-bold text-slate-950 dark:text-foreground">问 AI</span>
+                          <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-secondary-text">把问题直接交给问股，不必先找代码入口。</span>
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

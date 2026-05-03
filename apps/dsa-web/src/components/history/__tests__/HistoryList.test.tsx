@@ -50,7 +50,7 @@ describe('HistoryList', () => {
     const { container } = render(<HistoryList {...baseProps} items={[]} />);
 
     expect(screen.getByText('暂无历史分析记录')).toBeInTheDocument();
-    expect(screen.getByText('完成首次分析后，这里会保留最近结果。')).toBeInTheDocument();
+    expect(screen.getByText(/新的分析会自动保存在这里/)).toBeInTheDocument();
     expect(screen.getByText('历史分析')).toBeInTheDocument();
     expect(container.querySelector('.glass-card')).toBeTruthy();
   });
@@ -194,6 +194,7 @@ describe('HistoryList', () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole('button', { name: '管理' }));
     fireEvent.click(screen.getByText('全选当前'));
 
     expect(onToggleSelectAll).toHaveBeenCalledTimes(1);
@@ -201,6 +202,8 @@ describe('HistoryList', () => {
 
   it('disables delete when nothing is selected', () => {
     render(<HistoryList {...baseProps} items={items} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '管理' }));
 
     expect(screen.getByRole('button', { name: '删除' })).toBeDisabled();
   });
@@ -228,6 +231,10 @@ describe('HistoryList', () => {
         <HistoryList {...baseProps} items={items} />
       </>,
     );
+
+    for (const button of screen.getAllByRole('button', { name: '管理' })) {
+      fireEvent.click(button);
+    }
 
     const labels = container.querySelectorAll('label[for]');
     const ids = Array.from(labels).map((label) => label.getAttribute('for'));

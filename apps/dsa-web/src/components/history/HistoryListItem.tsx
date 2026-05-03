@@ -9,6 +9,7 @@ interface HistoryListItemProps {
   item: HistoryItem;
   isViewing: boolean; // Indicates if this report is currently being viewed in the right panel
   isHolding?: boolean;
+  selectionMode?: boolean;
   isChecked: boolean; // Indicates if the checkbox is checked for bulk operations
   isDeleting: boolean;
   onToggleChecked: (recordId: number) => void;
@@ -39,6 +40,7 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
   item,
   isViewing,
   isHolding = false,
+  selectionMode = false,
   isChecked,
   isDeleting,
   onToggleChecked,
@@ -50,7 +52,8 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
 
   return (
     <div className="flex items-start gap-2 group">
-      <div className="pt-5">
+      {selectionMode ? (
+        <div className="pt-5">
         <input
           type="checkbox"
           checked={isChecked}
@@ -58,7 +61,8 @@ export const HistoryListItem: React.FC<HistoryListItemProps> = ({
           disabled={isDeleting}
           className="h-3.5 w-3.5 cursor-pointer rounded border-subtle-hover bg-transparent accent-primary focus:ring-primary/30 disabled:opacity-50"
         />
-      </div>
+        </div>
+      ) : null}
       <button
         type="button"
         onClick={() => onClick(item.id)}

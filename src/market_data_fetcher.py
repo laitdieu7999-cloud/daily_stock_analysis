@@ -97,6 +97,7 @@ class ICMarketSnapshotData:
     main_contract_code: str
     fetched_at: str
     contracts: List[ICContractSnapshot]
+    option_proxy: Optional["ETFOptionProxyData"] = None
 
 
 @dataclass
@@ -1215,11 +1216,18 @@ class MarketDataFetcher:
                 main_contract_code = snapshots[0].symbol
                 snapshots[0].is_main = True
 
+            option_proxy = None
+            try:
+                option_proxy = self.get_500etf_option_proxy()
+            except Exception as exc:
+                logger.debug("[MarketData] 500ETF 期权代理并入 IC 快照失败: %s", exc)
+
             return ICMarketSnapshotData(
                 spot_price=round(float(spot_price), 2),
                 main_contract_code=main_contract_code,
                 fetched_at=datetime.now().isoformat(),
                 contracts=snapshots,
+                option_proxy=option_proxy,
             )
         except Exception as exc:
             logger.warning("[MarketData] 获取 IC 行情快照失败: %s", exc)
