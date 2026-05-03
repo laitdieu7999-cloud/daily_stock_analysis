@@ -109,10 +109,10 @@ const actionPillClass =
   'rounded-full border border-slate-200 bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] dark:border-white/10 dark:bg-white/5 dark:text-secondary-text';
 
 const emptyActionClass =
-  'group flex min-h-[8rem] flex-col justify-between rounded-2xl border border-slate-200/85 bg-white/80 p-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.75),0_18px_36px_rgba(15,23,42,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:border-sky-200 hover:bg-white hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_24px_44px_rgba(15,23,42,0.09)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15 dark:border-white/10 dark:bg-card/75 dark:hover:border-cyan/35 dark:hover:bg-card/95';
+  'group flex min-h-[6.6rem] flex-col justify-between rounded-2xl border border-slate-200/85 bg-white/80 p-3 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.75),0_18px_36px_rgba(15,23,42,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:border-sky-200 hover:bg-white hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_24px_44px_rgba(15,23,42,0.09)] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15 dark:border-white/10 dark:bg-card/75 dark:hover:border-cyan/35 dark:hover:bg-card/95';
 
 const emptyActionIconClass =
-  'mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-50 text-slate-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition-colors group-hover:border-sky-200 group-hover:bg-sky-50 group-hover:text-sky-700 dark:border-white/10 dark:bg-white/5 dark:text-secondary-text dark:group-hover:text-cyan';
+  'mb-2 flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200/80 bg-slate-50 text-slate-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition-colors group-hover:border-sky-200 group-hover:bg-sky-50 group-hover:text-sky-700 dark:border-white/10 dark:bg-white/5 dark:text-secondary-text dark:group-hover:text-cyan';
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
@@ -582,7 +582,7 @@ const HomePage: React.FC = () => {
               </div>
             ) : (
               <div className="flex min-h-full flex-col justify-start py-4">
-                <div className="relative overflow-hidden rounded-[2rem] border border-slate-200/90 bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.12),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,252,0.92))] p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_28px_80px_rgba(15,23,42,0.08)] dark:border-white/10 dark:bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.13),transparent_36%),linear-gradient(180deg,rgba(15,23,42,0.86),rgba(15,23,42,0.72))] md:p-7">
+                <div className="relative overflow-hidden rounded-[2rem] border border-slate-200/90 bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.12),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,252,0.92))] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_28px_80px_rgba(15,23,42,0.08)] dark:border-white/10 dark:bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.13),transparent_36%),linear-gradient(180deg,rgba(15,23,42,0.86),rgba(15,23,42,0.72))] md:p-5">
                   <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-cyan/10 blur-3xl" />
                   <div className="relative grid gap-6 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)] xl:items-center">
                     <div>
@@ -590,13 +590,13 @@ const HomePage: React.FC = () => {
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                         工作台待命
                       </div>
-                      <h3 className="text-3xl font-bold tracking-tight text-slate-950 dark:text-foreground">
+                      <h3 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-foreground">
                         开始分析
                       </h3>
-                      <p className="mt-3 max-w-xl text-sm leading-6 text-slate-600 dark:text-secondary-text">
+                      <p className="mt-2 max-w-xl text-sm leading-5 text-slate-600 dark:text-secondary-text">
                         输入股票代码进行分析，或从左侧选择历史报告查看。当前没有打开的报告，可以先从持仓、IC 或问股入口进入。
                       </p>
-                      <div className="mt-5 grid gap-2 text-xs text-slate-500 dark:text-secondary-text sm:grid-cols-3">
+                      <div className="mt-4 grid gap-2 text-xs text-slate-500 dark:text-secondary-text sm:grid-cols-3">
                         <div className="rounded-xl border border-slate-200/75 bg-white/65 px-3 py-2 dark:border-white/10 dark:bg-white/5">
                           持仓：{holdingCodes.size > 0 ? `${holdingCodes.size} 只` : '未录入'}
                         </div>
@@ -622,7 +622,7 @@ const HomePage: React.FC = () => {
                         </span>
                         <span>
                           <span className="block text-base font-bold text-slate-950 dark:text-foreground">从持仓开始</span>
-                          <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-secondary-text">检查当前持仓风险，再决定是否重新回测。</span>
+                          <span className="mt-1 block text-xs leading-4 text-slate-500 dark:text-secondary-text">检查持仓风险，再决定是否回测。</span>
                         </span>
                       </button>
 
@@ -638,7 +638,7 @@ const HomePage: React.FC = () => {
                         </span>
                         <span>
                           <span className="block text-base font-bold text-slate-950 dark:text-foreground">查看 IC</span>
-                          <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-secondary-text">快速判断期现差、到期天数和年化区间。</span>
+                          <span className="mt-1 block text-xs leading-4 text-slate-500 dark:text-secondary-text">看期现差、到期天数和年化。</span>
                         </span>
                       </button>
 
@@ -654,7 +654,7 @@ const HomePage: React.FC = () => {
                         </span>
                         <span>
                           <span className="block text-base font-bold text-slate-950 dark:text-foreground">问 AI</span>
-                          <span className="mt-1 block text-xs leading-5 text-slate-500 dark:text-secondary-text">把问题直接交给问股，不必先找代码入口。</span>
+                          <span className="mt-1 block text-xs leading-4 text-slate-500 dark:text-secondary-text">直接提问，不必先找代码入口。</span>
                         </span>
                       </button>
                     </div>

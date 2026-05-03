@@ -60,10 +60,13 @@ if [[ -d "${ROOT_DIR}/build/stock_analysis" ]]; then
 fi
 
 log "Creating stable static asset snapshot..."
-STATIC_SNAPSHOT="${ROOT_DIR}/build/static_snapshot"
-rm -rf "${STATIC_SNAPSHOT}"
-mkdir -p "$(dirname "${STATIC_SNAPSHOT}")"
-cp -R "${ROOT_DIR}/static" "${STATIC_SNAPSHOT}"
+mkdir -p "${ROOT_DIR}/build"
+STATIC_SNAPSHOT="$(mktemp -d "${ROOT_DIR}/build/static_snapshot.XXXXXX")"
+cleanup_static_snapshot() {
+  rm -rf "${STATIC_SNAPSHOT}"
+}
+trap cleanup_static_snapshot EXIT
+cp -R "${ROOT_DIR}/static/." "${STATIC_SNAPSHOT}/"
 
 hidden_imports=(
   "multipart"
@@ -126,7 +129,7 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "${STATIC_SNAPSHOT}:static" --add-data "strategies:strategies" --collect-data litellm --collect-data tiktoken --collect-data akshare --collect-data py_mini_racer --collect-binaries py_mini_racer)
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --specpath "${ROOT_DIR}/build" --onedir --noconfirm --noconsole --add-data "${STATIC_SNAPSHOT}:static" --add-data "${ROOT_DIR}/strategies:strategies" --collect-data litellm --collect-data tiktoken --collect-data akshare --collect-data py_mini_racer --collect-binaries py_mini_racer)
 cmd+=("${hidden_import_args[@]}" "main.py")
 
 echo "Running: ${cmd[*]}"
@@ -136,11 +139,18 @@ popd >/dev/null
 cp -R "${ROOT_DIR}/dist/stock_analysis" "${ROOT_DIR}/dist/backend/stock_analysis"
 
 log "Verifying static asset references (packaged)..."
-packaged_static="${ROOT_DIR}/dist/backend/stock_analysis/_internal/static"
-if [[ ! -d "${packaged_static}" ]]; then
-  packaged_static="${ROOT_DIR}/dist/backend/stock_analysis/static"
-fi
-if [[ -d "${packaged_static}" ]]; then
+packaged_static=""
+packaged_static_candidates=(
+  "${ROOT_DIR}/dist/backend/stock_analysis/_internal/static"
+  "${ROOT_DIR}/dist/backend/stock_analysis/static"
+)
+for candidate in "${packaged_static_candidates[@]}"; do
+  if [[ -f "${candidate}/index.html" ]]; then
+    packaged_static="${candidate}"
+    break
+  fi
+done
+if [[ -n "${packaged_static}" ]]; then
   "${PYTHON_BIN}" "${SCRIPT_DIR}/check_static_assets.py" "${packaged_static}"
 else
   log "WARNING: could not locate packaged static directory under dist/backend/stock_analysis; skipping post-package check."
