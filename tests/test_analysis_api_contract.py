@@ -1034,7 +1034,12 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         )
 
     def test_spa_fallback_blocks_path_traversal(self) -> None:
-        """SPA fallback must not serve files outside static_dir."""
+        """SPA fallback must not serve files outside static_dir.
+
+        Starlette's :path converter does not normalize `..` segments, so
+        without an explicit containment check `static_dir / full_path` can
+        resolve to arbitrary files on disk (CVE-class path traversal).
+        """
         if create_app is None:
             self.skipTest("fastapi is not installed in this test environment")
 

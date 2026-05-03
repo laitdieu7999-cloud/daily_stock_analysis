@@ -10,7 +10,9 @@ log() {
 
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "${PYTHON_BIN}" ]]; then
-  if command -v python3 >/dev/null 2>&1; then
+  if [[ -x "${ROOT_DIR}/.venv311/bin/python" ]]; then
+    PYTHON_BIN="${ROOT_DIR}/.venv311/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="python3"
   else
     PYTHON_BIN="python"
@@ -94,6 +96,7 @@ hidden_imports=(
   "api.v1.schemas.common"
   "api.middlewares"
   "api.middlewares.error_handler"
+  "src.logging_config"
   "src.services"
   "src.services.task_queue"
   "src.services.analysis_service"

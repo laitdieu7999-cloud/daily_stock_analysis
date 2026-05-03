@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BarChart3, RefreshCw, ShieldCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { backtestApi } from '../api/backtest';
@@ -56,6 +56,27 @@ function settlementValue(entry: ShadowLedgerEntry, key: string): string {
   return pct(item.returnPct);
 }
 
+function replayUrlFromIntraday(row: IntradayReplayEntry): string {
+  const params = new URLSearchParams();
+  if (row.code) params.set('code', row.code);
+  if (row.name) params.set('name', row.name);
+  if (row.signalType) params.set('signalType', signalTypeLabel(row.signalType));
+  if (row.triggerTimestamp) params.set('signalDate', row.triggerTimestamp.slice(0, 10));
+  if (row.entryPrice != null) params.set('entryPrice', String(row.entryPrice));
+  if (row.mfePct != null) params.set('mfePct', String(row.mfePct));
+  if (row.maePct != null) params.set('maePct', String(row.maePct));
+  return `/signal-replay?${params.toString()}`;
+}
+
+function replayUrlFromLedger(row: ShadowLedgerEntry): string {
+  const params = new URLSearchParams();
+  params.set('code', row.code);
+  params.set('signalType', row.rule);
+  params.set('signalDate', row.signalDate);
+  params.set('entryPrice', String(row.entryPrice));
+  return `/signal-replay?${params.toString()}`;
+}
+
 const SummaryMetric: React.FC<{ label: string; value: string | number; hint?: string }> = ({ label, value, hint }) => (
   <Card variant="gradient" padding="md">
     <span className="label-uppercase">{label}</span>
@@ -83,6 +104,63 @@ const ResearchShortcut: React.FC<{ title: string; description: string; to: strin
     </div>
   </Link>
 );
+
+const LayerSummary: React.FC<{ data: ShadowDashboardResponse }> = ({ data }) => {
+  const buyCount = data.intradayReplay.signalTypeCounts.find((item) => item.signalType === 'BUY_SETUP');
+  const riskCounts = data.intradayReplay.signalTypeCounts.filter((item) => item.signalType.startsWith('RISK_'));
+  const riskTotal = riskCounts.reduce((sum, item) => sum + item.count, 0);
+  const riskLabeled = riskCounts.reduce((sum, item) => sum + item.labeledCount, 0);
+  const riskEffective = riskCounts.reduce((sum, item) => sum + item.effectiveCount, 0);
+  const icShadowCount = data.ledger.ruleCounts
+    .filter((item) => item.rule.toUpperCase().includes('IC') || item.rule.includes('贴水') || item.rule.includes('期限'))
+    .reduce((sum, item) => sum + item.count, 0);
+  const rows = [
+    {
+      module: '自选买入',
+      sample: buyCount?.count ?? 0,
+      labeled: buyCount?.labeledCount ?? 0,
+      metric: pct(buyCount?.effectiveRatePct, 1),
+      hint: '只统计明确买入提醒，非买入信号已被路由拦截。',
+    },
+    {
+      module: '持仓风控',
+      sample: riskTotal,
+      labeled: riskLabeled,
+      metric: riskLabeled ? pct((riskEffective / riskLabeled) * 100, 1) : '--',
+      hint: '看触发后是否继续回撤，不和买入信号共用一把尺。',
+    },
+    {
+      module: '理论进攻',
+      sample: data.scorecard.candidates.length,
+      labeled: data.scorecard.candidates.length,
+      metric: data.scorecard.status === 'ok' ? '已筛选' : data.scorecard.status,
+      hint: '通过样本外、置换和成本后门槛才进入 Shadow。',
+    },
+    {
+      module: 'IC Shadow',
+      sample: icShadowCount,
+      labeled: data.ledger.settledCount,
+      metric: '静默记录',
+      hint: '只进纸面账本，不触发飞书和桌面强提醒。',
+    },
+  ];
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      {rows.map((row) => (
+        <div key={row.module} className="rounded-2xl border border-border/60 bg-surface-2/60 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-semibold text-foreground">{row.module}</p>
+              <p className="mt-1 text-xs text-muted-text">样本 {row.sample} · 已回填 {row.labeled}</p>
+            </div>
+            <Badge variant="info">{row.metric}</Badge>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-secondary-text">{row.hint}</p>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 const CandidateTable: React.FC<{ rows: ShadowScorecardRow[] }> = ({ rows }) => {
   if (!rows.length) {
@@ -161,6 +239,11 @@ const IntradayReplayTable: React.FC<{ rows: IntradayReplayEntry[] }> = ({ rows }
               <td className="px-3 py-3">
                 <p className="font-mono text-foreground">{row.code || '--'}</p>
                 <p className="mt-1 text-xs text-muted-text">{row.name || '--'} · {row.triggerTimestamp || '--'}</p>
+                {row.code ? (
+                  <Link to={replayUrlFromIntraday(row)} className="mt-2 inline-flex text-xs font-medium text-cyan-700 hover:text-cyan-600">
+                    查看K线
+                  </Link>
+                ) : null}
               </td>
               <td className="px-3 py-3">
                 <p className="font-medium text-foreground">{signalTypeLabel(row.signalType)}</p>
@@ -207,6 +290,9 @@ const LedgerTable: React.FC<{ rows: ShadowLedgerEntry[] }> = ({ rows }) => {
               <td className="px-3 py-3">
                 <p className="font-mono text-foreground">{row.code}</p>
                 <p className="mt-1 text-xs text-muted-text">{row.signalDate}</p>
+                <Link to={replayUrlFromLedger(row)} className="mt-2 inline-flex text-xs font-medium text-cyan-700 hover:text-cyan-600">
+                  查看K线
+                </Link>
               </td>
               <td className="px-3 py-3">
                 <p className="font-medium text-foreground">{row.rule}</p>
@@ -230,6 +316,7 @@ const ShadowPage: React.FC = () => {
   const [data, setData] = useState<ShadowDashboardResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<ParsedApiError | null>(null);
+  const hasReplayRows = useMemo(() => Boolean(data?.intradayReplay.entries.length), [data]);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -297,6 +384,10 @@ const ShadowPage: React.FC = () => {
               </div>
             </Card>
 
+            <Card title="信号表现摘要" subtitle="Layered Scorecard">
+              <LayerSummary data={data} />
+            </Card>
+
             <Card title="盘中提醒准确率" subtitle="Intraday Replay">
               <div className="mb-5 grid gap-3 md:grid-cols-5">
                 <SummaryMetric label="触发总数" value={data.intradayReplay.totalCount} hint="持仓风控 + 自选买入" />
@@ -322,6 +413,9 @@ const ShadowPage: React.FC = () => {
                 </div>
               ) : null}
               <IntradayReplayTable rows={data.intradayReplay.entries} />
+              {hasReplayRows ? (
+                <p className="mt-3 text-xs text-secondary-text">点击“查看K线”可进入最小复盘页，检查信号在 MA5/MA20 与止损线上的实际位置。</p>
+              ) : null}
             </Card>
 
             <Card title="通过治理门槛的进攻信号" subtitle="Theory Scorecard">

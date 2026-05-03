@@ -74,6 +74,64 @@ const getAnnualizedToneClass = (annualizedPct: number): string => {
   return 'text-foreground';
 };
 
+type IcDeskState = {
+  frontLabel: string;
+  frontTone: string;
+  frontGapPct?: number | null;
+  farAnchorPct?: number | null;
+  putProxyLabel: string;
+  actionHint: string;
+};
+
+const buildIcDeskState = (snapshot: ICMarketSnapshot | null): IcDeskState => {
+  const contracts = [...(snapshot?.contracts || [])].sort((a, b) => a.daysToExpiry - b.daysToExpiry);
+  const frontGapPct = contracts.length >= 2
+    ? contracts[0].annualizedBasisPct - contracts[1].annualizedBasisPct
+    : null;
+  const farA = contracts.length >= 4 ? contracts[2] : contracts[contracts.length - 2];
+  const farB = contracts.length >= 4 ? contracts[3] : contracts[contracts.length - 1];
+  const farAnchorPct = farA && farB ? farA.annualizedBasisPct - farB.annualizedBasisPct : null;
+
+  if (frontGapPct == null) {
+    return {
+      frontLabel: '待刷新',
+      frontTone: 'border-border bg-surface/60 text-secondary-text',
+      frontGapPct,
+      farAnchorPct,
+      putProxyLabel: '期权代理未接入',
+      actionHint: '等待 IC 合约行情。Shadow 指标只记录，不强推送。',
+    };
+  }
+  if (frontGapPct >= 6) {
+    return {
+      frontLabel: '前端塌陷',
+      frontTone: 'border-rose-400/40 bg-rose-500/10 text-rose-200',
+      frontGapPct,
+      farAnchorPct,
+      putProxyLabel: '需查看500ETF认沽',
+      actionHint: '近月贴水显著深于次月，优先人工确认是否需要保护；系统仅写 Shadow。',
+    };
+  }
+  if (frontGapPct >= 3) {
+    return {
+      frontLabel: '需要关注',
+      frontTone: 'border-amber-400/40 bg-amber-500/10 text-amber-200',
+      frontGapPct,
+      farAnchorPct,
+      putProxyLabel: '观察认沽价格比',
+      actionHint: '前端斜率开始走陡，先看是否伴随现货弱势和认沽放量。',
+    };
+  }
+  return {
+    frontLabel: '结构正常',
+    frontTone: 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200',
+    frontGapPct,
+    farAnchorPct,
+    putProxyLabel: '无需动作',
+    actionHint: '期限结构未显示踩踏，继续按面板观察贴水和持仓计划。',
+  };
+};
+
 const formatDateTime = (value: Date): string =>
   new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric',
@@ -194,6 +252,7 @@ const ICAnnualizedPage: React.FC = () => {
   }, [applyCurrentContractToManual, currentContract, manualInitialized, snapshot]);
 
   const currentStatus = currentContract ? getAnnualizedStatus(currentContract.annualizedBasisPct) : null;
+  const icDeskState = useMemo(() => buildIcDeskState(snapshot), [snapshot]);
   const currentAnnualizedToneClass = currentContract
     ? getAnnualizedToneClass(currentContract.annualizedBasisPct)
     : 'text-foreground';
@@ -247,6 +306,40 @@ const ICAnnualizedPage: React.FC = () => {
             {error}
           </div>
         ) : null}
+
+        <div className="grid gap-3 md:grid-cols-4">
+          <div className="rounded-3xl border border-subtle bg-surface/60 p-4">
+            <div className="text-xs text-secondary-text">近月年化贴水</div>
+            <div className={`mt-2 text-2xl font-semibold ${currentAnnualizedToneClass}`}>
+              {currentContract ? `${formatSigned(currentContract.annualizedBasisPct)}%` : '--'}
+            </div>
+            <div className="mt-1 text-xs text-secondary-text">{currentContract?.symbol || '主力合约'}</div>
+          </div>
+          <div className={`rounded-3xl border p-4 ${icDeskState.frontTone}`}>
+            <div className="text-xs opacity-80">M1-M2 状态</div>
+            <div className="mt-2 text-2xl font-semibold">{icDeskState.frontLabel}</div>
+            <div className="mt-1 text-xs opacity-80">
+              {icDeskState.frontGapPct == null ? '--' : `${formatSigned(icDeskState.frontGapPct)}%`}
+            </div>
+          </div>
+          <div className="rounded-3xl border border-subtle bg-surface/60 p-4">
+            <div className="text-xs text-secondary-text">Q1-Q2 远季锚</div>
+            <div className="mt-2 text-2xl font-semibold text-foreground">
+              {icDeskState.farAnchorPct == null ? '--' : `${formatSigned(icDeskState.farAnchorPct)}%`}
+            </div>
+            <div className="mt-1 text-xs text-secondary-text">用于分红季镇静，不直接推送。</div>
+          </div>
+          <div className="rounded-3xl border border-subtle bg-surface/60 p-4">
+            <div className="text-xs text-secondary-text">500ETF认沽代理</div>
+            <div className="mt-2 text-lg font-semibold text-foreground">{icDeskState.putProxyLabel}</div>
+            <div className="mt-1 text-xs text-secondary-text">PCR / 虚平认沽比后续接数据。</div>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-subtle bg-surface/60 px-4 py-3 text-sm text-secondary-text">
+          <span className="font-medium text-foreground">IC 执行提示：</span>
+          <span className="ml-2">{icDeskState.actionHint}</span>
+        </div>
 
         <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
           <div className="rounded-3xl border border-subtle bg-surface/60 p-4">

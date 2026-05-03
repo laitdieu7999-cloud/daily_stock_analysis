@@ -99,11 +99,12 @@ class SystemOverviewServiceTestCase(unittest.TestCase):
                 database_path="./data/stock_analysis.db",
             )
 
-            payload = SystemOverviewService(
-                project_root=project_root,
-                home_dir=home_tmp,
-                config=config,
-            ).build_overview()
+            with patch.object(SystemOverviewService, "_is_port_open", return_value=False):
+                payload = SystemOverviewService(
+                    project_root=project_root,
+                    home_dir=home_tmp,
+                    config=config,
+                ).build_overview()
 
         services = {item["key"]: item for item in payload["services"]}
         self.assertEqual(services["desktop_backend"]["status"], "warning")

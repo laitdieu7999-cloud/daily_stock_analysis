@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analysisApi, DuplicateTaskError } from '../../api/analysis';
 import { backtestApi } from '../../api/backtest';
 import { historyApi } from '../../api/history';
+import { icApi } from '../../api/ic';
 import { portfolioApi } from '../../api/portfolio';
 import { useStockPoolStore } from '../../stores';
 import { getReportText, normalizeReportLanguage } from '../../utils/reportLanguage';
@@ -42,6 +43,12 @@ vi.mock('../../api/analysis', async () => {
 vi.mock('../../api/backtest', () => ({
   backtestApi: {
     run: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/ic', () => ({
+  icApi: {
+    getSnapshot: vi.fn(),
   },
 }));
 
@@ -111,6 +118,33 @@ describe('HomePage', () => {
       fxStale: false,
       accounts: [],
     });
+    vi.mocked(icApi.getSnapshot).mockResolvedValue({
+      spotPrice: 5400,
+      mainContractCode: 'IC2606',
+      fetchedAt: '2026-03-18T08:00:00Z',
+      contracts: [
+        {
+          symbol: 'IC2606',
+          price: 5200,
+          expiryDate: '2026-06-19',
+          daysToExpiry: 60,
+          termGapDays: 60,
+          basis: 200,
+          annualizedBasisPct: 23.4,
+          isMain: true,
+        },
+        {
+          symbol: 'IC2609',
+          price: 5100,
+          expiryDate: '2026-09-18',
+          daysToExpiry: 151,
+          termGapDays: 91,
+          basis: 300,
+          annualizedBasisPct: 14.2,
+          isMain: false,
+        },
+      ],
+    });
   });
 
   it('renders the dashboard workspace and auto-loads the first report', async () => {
@@ -139,6 +173,8 @@ describe('HomePage', () => {
     expect(dashboard.firstElementChild?.className).toContain('min-h-0');
     expect(dashboard.querySelector('.flex-1.flex.min-h-0.overflow-hidden')).toBeTruthy();
     expect(screen.getByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL')).toBeInTheDocument();
+    expect(screen.getByLabelText('今日行动面板')).toBeInTheDocument();
+    expect(await screen.findByText(/IC IC2606/)).toBeInTheDocument();
     expect(await screen.findByText('趋势维持强势')).toBeInTheDocument();
     expect(
       screen.getByRole('button', {

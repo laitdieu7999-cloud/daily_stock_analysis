@@ -935,7 +935,7 @@ class StockAnalysisPipeline:
         return enriched_context
 
     def _ensure_agent_history(self, code: str, min_days: int = 240) -> None:
-        """Ensure enough K-line history is present in DB before agent tools run."""
+        """Ensure at least *min_days* of K-line history is in DB for agent tools."""
         from src.services.history_loader import get_frozen_target_date
 
         target = get_frozen_target_date()
@@ -1010,6 +1010,7 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"[{code}] Agent mode: social sentiment fetch failed: {e}")
 
+            # Issue #1066: ensure deep history is in DB before agent tools run
             self._ensure_agent_history(code)
 
             # 运行 Agent

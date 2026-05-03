@@ -97,6 +97,8 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         notifier.send.assert_not_called()
 
     def test_run_market_review_comma_joined_subset_cn_us(self) -> None:
+        """Regression: compute_effective_region("both", {"cn","us"}) -> "cn,us"
+        must produce A-share + US report without HK."""
         notifier = self._make_notifier()
         cn_analyzer = MagicMock()
         cn_analyzer.run_daily_review.return_value = "CN body"
@@ -122,6 +124,8 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertNotIn("HK", result)
 
     def test_run_market_review_comma_joined_subset_cn_hk(self) -> None:
+        """Regression: compute_effective_region("both", {"cn","hk"}) -> "cn,hk"
+        must produce A-share + HK report without US."""
         notifier = self._make_notifier()
         cn_analyzer = MagicMock()
         cn_analyzer.run_daily_review.return_value = "CN body"

@@ -51,6 +51,14 @@ class ConfigIssue:
 _MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
 SUPPORTED_LLM_CHANNEL_PROTOCOLS = ("openai", "anthropic", "gemini", "vertex_ai", "deepseek", "ollama")
 _FALSEY_ENV_VALUES = {"0", "false", "no", "off"}
+# Kimi K2.6 is consumed through Moonshot's OpenAI-compatible API in this
+# repository. Official references:
+# - https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart
+# - https://platform.moonshot.ai/docs/guide/compatibility#parameters-differences-in-request-body
+# - https://huggingface.co/moonshotai/Kimi-K2.6
+# - https://docs.litellm.ai/docs/providers/openai_compatible
+# Only the strict Kimi K2.6 family is normalized here; other models and
+# fallbacks continue using the configured runtime temperature.
 _FIXED_TEMPERATURE_LITELLM_MODELS: Dict[str, Dict[str, float]] = {
     "kimi-k2.6": {
         "thinking": 1.0,
@@ -319,7 +327,6 @@ def get_configured_llm_models(model_list: List[Dict[str, Any]]) -> List[str]:
         models.append(name)
     return models
 
-
 def _resolve_litellm_model_list_entry(
     model: str,
     model_list: Optional[List[Dict[str, Any]]] = None,
@@ -337,7 +344,6 @@ def _resolve_litellm_model_list_entry(
         if model_name == normalized_model:
             return entry
     return None
-
 
 def resolve_litellm_wire_model(
     model: str,
@@ -460,7 +466,7 @@ def normalize_litellm_temperature(
 
 
 def resolve_unified_llm_temperature(model: str) -> float:
-    """Resolve the unified LLM temperature with backward-compatible fallbacks."""
+    """Resolve the raw unified LLM temperature with backward-compatible fallbacks."""
     llm_temperature_raw = os.getenv("LLM_TEMPERATURE")
     if llm_temperature_raw and llm_temperature_raw.strip():
         try:

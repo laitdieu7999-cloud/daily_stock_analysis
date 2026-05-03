@@ -61,6 +61,10 @@ describe('ICAnnualizedPage', () => {
     expect(screen.getAllByText('IC2606').length).toBeGreaterThan(0);
     expect(screen.getAllByText('2026/06/19周五').length).toBeGreaterThan(0);
     expect(screen.getAllByText('+9.48%').length).toBeGreaterThan(0);
+    expect(screen.getByText('M1-M2 状态')).toBeInTheDocument();
+    expect(screen.getByText('结构正常')).toBeInTheDocument();
+    expect(screen.getAllByText('+1.39%').length).toBeGreaterThan(0);
+    expect(screen.getByText(/IC 执行提示/)).toBeInTheDocument();
     expect(screen.queryByText('主力')).not.toBeInTheDocument();
   });
 

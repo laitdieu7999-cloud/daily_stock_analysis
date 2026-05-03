@@ -13,6 +13,7 @@ import ReviewPage from './pages/ReviewPage';
 import DataCenterPage from './pages/DataCenterPage';
 import SystemOverviewPage from './pages/SystemOverviewPage';
 import ShadowPage from './pages/ShadowPage';
+import SignalReplayPage from './pages/SignalReplayPage';
 import { ApiErrorAlert, Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useAgentChatStore } from './stores/agentChatStore';
@@ -75,6 +76,7 @@ const AppContent: React.FC = () => {
         <Route path="/reviews" element={<ReviewPage />} />
         <Route path="/backtest" element={<BacktestPage />} />
         <Route path="/shadow" element={<ShadowPage />} />
+        <Route path="/signal-replay" element={<SignalReplayPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

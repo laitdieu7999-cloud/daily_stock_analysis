@@ -62,7 +62,18 @@ class _LiteLLMStreamError(RuntimeError):
 
 
 class _AllModelsFailedError(Exception):
-    """Raised when every model in the fallback chain fails."""
+    """Raised when every model in the fallback chain fails.
+
+    This includes both LLM call errors and JSON parse errors (when a
+    ``response_validator`` is provided to :meth:`GeminiAnalyzer._call_litellm`).
+
+    The ``last_response_text`` attribute holds the raw text from the last model
+    that *did* return a response (but whose JSON could not be validated), so
+    callers can still attempt a best-effort text fallback.
+
+    ``last_model`` and ``last_usage`` record the model name and token usage
+    from the last attempt so callers can persist usage even on fallback.
+    """
 
     def __init__(
         self,
@@ -280,7 +291,7 @@ def _normalize_prompt_reason_items(items: Any) -> List[str]:
 
 
 def _contains_trend_hint(text: str, hints: Tuple[str, ...]) -> bool:
-    """Return True when text contains a non-negated trend hint."""
+    """Return True when text contains a non-negated strong trend hint."""
     lowered = text.strip().lower()
 
     def _has_negation_scope_break(gap: str) -> bool:
@@ -339,7 +350,8 @@ def _infer_trend_direction(trend: Dict[str, Any]) -> str:
     )
     if not combined:
         return "neutral"
-    normalized = combined.lower().replace(" ", "")
+    lowered = combined.lower()
+    normalized = lowered.replace(" ", "")
     has_bullish = (
         _contains_trend_hint(combined, _BULLISH_TREND_HINTS + _WEAK_BULLISH_TREND_HINTS)
         or "ma5>ma10>ma20" in normalized
@@ -364,6 +376,7 @@ def _infer_trend_direction(trend: Dict[str, Any]) -> str:
 
 
 def _filter_conflicting_trend_items(items: List[str], conflict_hints: Tuple[str, ...]) -> List[str]:
+    """Drop reasons that directly conflict with the final trend direction."""
     return [item for item in items if not _contains_trend_hint(item, conflict_hints)]
 
 
@@ -372,7 +385,7 @@ def _sanitize_trend_analysis_for_prompt(
     *,
     volume_change_ratio: Any = None,
 ) -> Dict[str, Any]:
-    """Clean prompt-only trend hints on a derived copy without touching runtime data."""
+    """Clean prompt-only trend hints on a derived copy without touching runtime/provider config."""
     trend_dict = dict(trend) if isinstance(trend, dict) else {}
     signal_reasons = _normalize_prompt_reason_items(trend_dict.get("signal_reasons"))
     risk_factors = _normalize_prompt_reason_items(trend_dict.get("risk_factors"))
@@ -1417,6 +1430,11 @@ class GeminiAnalyzer:
         Args:
             prompt: User prompt text.
             generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
+            response_validator: Optional callable that accepts the raw response text and raises
+                an exception if the response is unacceptable (e.g. not valid JSON).  When it
+                raises, the current model is treated as failed and the next fallback model is
+                tried.  If all models fail validation, :class:`_AllModelsFailedError` is raised
+                with ``last_response_text`` set to the last raw response received.
 
         Returns:
             Tuple of (response text, model_used, usage). On success model_used is the full model
@@ -1464,6 +1482,7 @@ class GeminiAnalyzer:
 
                 _stream_text: Optional[str] = None
                 _stream_usage: Dict[str, Any] = {}
+
                 if stream:
                     try:
                         stream_response = self._dispatch_litellm_completion(
@@ -2658,7 +2677,17 @@ than generic stock analysis.
         return json_str
 
     def _validate_json_response(self, text: str) -> None:
-        """Validate that text contains a parseable JSON object."""
+        """Validate that *text* contains a parseable JSON object.
+
+        Used as the ``response_validator`` argument to :meth:`_call_litellm` so
+        that a JSON-less or unparseable reply from the primary model is treated
+        as a model failure and triggers fallback to the next configured model.
+
+        Raises:
+            ValueError: if no JSON object is found in *text*.
+            json.JSONDecodeError: if the extracted JSON cannot be parsed (after
+                :meth:`_fix_json_string` attempts repair).
+        """
         cleaned = text
         if "```json" in cleaned:
             cleaned = cleaned.replace("```json", "").replace("```", "")

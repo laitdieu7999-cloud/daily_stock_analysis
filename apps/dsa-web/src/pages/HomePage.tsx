@@ -2,6 +2,7 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { backtestApi } from '../api/backtest';
+import { icApi, type ICMarketSnapshot } from '../api/ic';
 import { portfolioApi } from '../api/portfolio';
 import { ApiErrorAlert, ConfirmDialog, Button, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
@@ -24,6 +25,89 @@ const toHoldingKey = (code?: string | null): string | null => {
   return removeMarketSuffix(normalized);
 };
 
+type IcActionState = {
+  mainSymbol: string;
+  mainAnnualizedPct: number | null;
+  frontGapPct: number | null;
+  status: 'normal' | 'watch' | 'collapse' | 'missing';
+  label: string;
+};
+
+const formatPct = (value: number | null, digits = 1): string => {
+  if (value == null || !Number.isFinite(value)) {
+    return '--';
+  }
+  const fixed = value.toFixed(digits);
+  return value > 0 ? `+${fixed}%` : `${fixed}%`;
+};
+
+const buildIcActionState = (snapshot: ICMarketSnapshot | null): IcActionState => {
+  const contracts = [...(snapshot?.contracts || [])]
+    .filter((item) => item.symbol && item.daysToExpiry > 0)
+    .sort((a, b) => a.daysToExpiry - b.daysToExpiry);
+  const main = contracts.find((item) => item.isMain) || contracts[0];
+  const front = contracts[0];
+  const next = contracts[1];
+  const frontGapPct = front && next ? front.annualizedBasisPct - next.annualizedBasisPct : null;
+
+  if (!main) {
+    return {
+      mainSymbol: '--',
+      mainAnnualizedPct: null,
+      frontGapPct,
+      status: 'missing',
+      label: '待刷新',
+    };
+  }
+
+  if (frontGapPct != null && frontGapPct >= 6) {
+    return {
+      mainSymbol: main.symbol,
+      mainAnnualizedPct: main.annualizedBasisPct,
+      frontGapPct,
+      status: 'collapse',
+      label: '前端塌陷',
+    };
+  }
+
+  if (frontGapPct != null && frontGapPct >= 3) {
+    return {
+      mainSymbol: main.symbol,
+      mainAnnualizedPct: main.annualizedBasisPct,
+      frontGapPct,
+      status: 'watch',
+      label: '需要关注',
+    };
+  }
+
+  return {
+    mainSymbol: main.symbol,
+    mainAnnualizedPct: main.annualizedBasisPct,
+    frontGapPct,
+    status: 'normal',
+    label: '结构正常',
+  };
+};
+
+const icStatusClass = (status: IcActionState['status']): string => {
+  if (status === 'collapse') return 'border-rose-300/70 bg-rose-50/95 text-rose-950 shadow-rose-950/5 dark:border-rose-400/35 dark:bg-rose-500/12 dark:text-rose-100';
+  if (status === 'watch') return 'border-amber-300/75 bg-amber-50/95 text-amber-950 shadow-amber-950/5 dark:border-amber-400/35 dark:bg-amber-500/12 dark:text-amber-100';
+  if (status === 'missing') return 'border-border/70 bg-card/85 text-secondary-text';
+  return 'border-emerald-300/75 bg-emerald-50/95 text-emerald-950 shadow-emerald-950/5 dark:border-emerald-400/35 dark:bg-emerald-500/12 dark:text-emerald-100';
+};
+
+const actionCardBaseClass =
+  'group rounded-[1.35rem] border p-4 text-left shadow-soft-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-soft-card-strong focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15';
+
+const neutralActionCardClass =
+  `${actionCardBaseClass} border-slate-200/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,252,0.94))] hover:border-sky-200 hover:bg-white dark:border-white/10 dark:bg-card/80 dark:hover:border-cyan/30`;
+
+const actionEyebrowClass =
+  'text-[11px] font-bold uppercase tracking-[0.2em] text-slate-500 dark:text-secondary-text';
+
+const actionPillClass =
+  'rounded-full border border-slate-200 bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] dark:border-white/10 dark:bg-white/5 dark:text-secondary-text';
+
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -31,6 +115,8 @@ const HomePage: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [holdingCodes, setHoldingCodes] = useState<Set<string>>(new Set());
+  const [icSnapshot, setIcSnapshot] = useState<ICMarketSnapshot | null>(null);
+  const [icSnapshotFailed, setIcSnapshotFailed] = useState(false);
   const [portfolioLaunchMessage, setPortfolioLaunchMessage] = useState<string | null>(null);
 
   const {
@@ -97,8 +183,32 @@ const HomePage: React.FC = () => {
     void loadHoldingCodes();
   }, [loadHoldingCodes]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadIcSnapshot = async () => {
+      try {
+        const snapshot = await icApi.getSnapshot();
+        if (!cancelled) {
+          setIcSnapshot(snapshot);
+          setIcSnapshotFailed(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setIcSnapshot(null);
+          setIcSnapshotFailed(true);
+        }
+      }
+    };
+
+    void loadIcSnapshot();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const reportLanguage = normalizeReportLanguage(selectedReport?.meta.reportLanguage);
   const reportText = getReportText(reportLanguage);
+  const icActionState = useMemo(() => buildIcActionState(icSnapshot), [icSnapshot]);
 
   useDashboardLifecycle({
     loadInitialHistory,
@@ -241,8 +351,8 @@ const HomePage: React.FC = () => {
       data-testid="home-dashboard"
       className="flex h-[calc(100vh-5rem)] w-full flex-col overflow-hidden md:flex-row sm:h-[calc(100vh-5.5rem)] lg:h-[calc(100vh-2rem)]"
     >
-      <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full lg:max-w-6xl mx-auto w-full">
-        <header className="flex min-w-0 flex-shrink-0 items-center overflow-hidden px-3 py-3 md:px-4 md:py-4">
+      <div className="flex-1 flex flex-col min-h-0 min-w-0 max-w-full xl:max-w-7xl mx-auto w-full">
+        <header className="flex min-w-0 flex-shrink-0 items-center overflow-visible px-3 py-3 md:px-4 md:py-4">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2.5 md:flex-nowrap">
             <button
               onClick={() => setSidebarOpen(true)}
@@ -265,7 +375,7 @@ const HomePage: React.FC = () => {
                 className={inputError ? 'border-danger/50' : undefined}
               />
             </div>
-            <label className="flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-subtle bg-surface/60 px-3 text-xs text-secondary-text select-none transition-colors hover:border-subtle-hover hover:text-foreground">
+            <label className="flex h-10 flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-slate-200/90 bg-white/75 px-3 text-xs font-medium text-slate-600 shadow-soft-card select-none transition-colors hover:border-sky-200 hover:text-slate-950 dark:border-white/10 dark:bg-card/75 dark:text-secondary-text dark:hover:text-foreground">
               <input
                 type="checkbox"
                 checked={notify}
@@ -278,7 +388,7 @@ const HomePage: React.FC = () => {
               type="button"
               onClick={() => handleSubmitAnalysis()}
               disabled={!query || isAnalyzing}
-              className="btn-primary flex h-10 flex-shrink-0 items-center gap-1.5 whitespace-nowrap"
+              className="btn-primary flex h-10 flex-shrink-0 items-center gap-1.5 whitespace-nowrap px-4"
             >
               {isAnalyzing ? (
                 <>
@@ -326,6 +436,72 @@ const HomePage: React.FC = () => {
           </div>
         ) : null}
 
+        <section className="px-3 pb-3 md:px-4" aria-label="今日行动面板">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <button
+              type="button"
+              onClick={() => navigate('/portfolio')}
+              className={neutralActionCardClass}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className={actionEyebrowClass}>P1 风控</p>
+                <span className={actionPillClass}>持仓</span>
+              </div>
+              <p className="mt-3 text-2xl font-bold tracking-tight text-slate-950 dark:text-foreground">
+                {holdingCodes.size > 0 ? `${holdingCodes.size} 只持仓` : '暂无持仓'}
+              </p>
+              <p className="mt-1.5 text-sm leading-5 text-slate-600 dark:text-secondary-text">只对破位、止损、异常波动做行动提醒。</p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigate('/ic-calculator')}
+              className={`${actionCardBaseClass} ${icStatusClass(icActionState.status)} relative overflow-hidden`}
+            >
+              <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-current/25 to-transparent opacity-70" />
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11px] font-bold uppercase tracking-[0.2em] opacity-70">IC 期现</p>
+                <span className="rounded-full border border-current/25 bg-white/45 px-2.5 py-1 text-[11px] font-semibold dark:bg-white/5">{icActionState.label}</span>
+              </div>
+              <p className="mt-3 text-2xl font-bold tracking-tight">
+                IC {icActionState.mainSymbol} {formatPct(icActionState.mainAnnualizedPct)}
+              </p>
+              <p className="mt-1.5 text-sm leading-5 opacity-75">
+                M1-M2 {formatPct(icActionState.frontGapPct)}
+                {icSnapshotFailed ? '，行情待刷新' : '，点击看合约明细'}
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigate('/chat')}
+              className={neutralActionCardClass}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className={actionEyebrowClass}>P2 机会</p>
+                <span className={actionPillClass}>自选</span>
+              </div>
+              <p className="mt-3 text-2xl font-bold tracking-tight text-slate-950 dark:text-foreground">只推买入点</p>
+              <p className="mt-1.5 text-sm leading-5 text-slate-600 dark:text-secondary-text">其余震荡、观察、普通利好全部静默。</p>
+            </button>
+
+            <button
+              type="button"
+              onClick={selectedReport?.meta.id ? openMarkdownDrawer : () => void refreshHistory()}
+              className={neutralActionCardClass}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className={actionEyebrowClass}>报告</p>
+                <span className={actionPillClass}>核心</span>
+              </div>
+              <p className="mt-3 line-clamp-1 text-2xl font-bold tracking-tight text-slate-950 dark:text-foreground">
+                {selectedReport ? selectedReport.meta.stockName || selectedReport.meta.stockCode : '等待报告'}
+              </p>
+              <p className="mt-1.5 text-sm leading-5 text-slate-600 dark:text-secondary-text">桌面只保留核心报告，辅助内容后台归档。</p>
+            </button>
+          </div>
+        </section>
+
         <div className="flex-1 flex min-h-0 overflow-hidden">
           <div className="hidden min-h-0 w-64 shrink-0 flex-col overflow-hidden pl-4 pb-4 md:flex lg:w-72">
             {sidebarContent}
@@ -356,7 +532,7 @@ const HomePage: React.FC = () => {
                 <DashboardStateBlock title="加载报告中..." loading />
               </div>
             ) : selectedReport ? (
-              <div className="max-w-4xl space-y-4 pb-8">
+              <div className="max-w-5xl space-y-4 pb-8">
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   <Button
                     variant="home-action-ai"

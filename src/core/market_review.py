@@ -78,38 +78,38 @@ def run_market_review(
         if override_region is not None
         else (getattr(config, 'market_review_region', 'cn') or 'cn')
     )
-    all_markets = [('cn', 'cn_title', 'A 股'), ('hk', 'hk_title', '港股'), ('us', 'us_title', '美股')]
-    valid_singles = {'cn', 'us', 'hk'}
+    _ALL_MARKETS = [('cn', 'cn_title', 'A 股'), ('hk', 'hk_title', '港股'), ('us', 'us_title', '美股')]
+    _VALID_SINGLES = {'cn', 'us', 'hk'}
 
+    # Determine which markets to run.
+    # region can be: 'cn', 'hk', 'us', 'both', or a comma-joined subset like 'cn,us'.
     if ',' in region:
-        run_markets = [m.strip() for m in region.split(',') if m.strip() in valid_singles]
+        run_markets = [m.strip() for m in region.split(',') if m.strip() in _VALID_SINGLES]
     elif region == 'both':
-        run_markets = [market for market, _, _ in all_markets]
-    elif region in valid_singles:
+        run_markets = [market for market, _, _ in _ALL_MARKETS]
+    elif region in _VALID_SINGLES:
         run_markets = [region]
     else:
         run_markets = ['cn']
 
     try:
         if len(run_markets) > 1:
+            # 多市场顺序执行，合并报告
             parts = []
-            for market, title_key, label in all_markets:
-                if market not in run_markets:
+            for mkt, title_key, label in _ALL_MARKETS:
+                if mkt not in run_markets:
                     continue
                 logger.info("生成 %s 大盘复盘报告...", label)
-                market_analyzer = MarketAnalyzer(
-                    search_service=search_service,
-                    analyzer=analyzer,
-                    region=market,
+                mkt_analyzer = MarketAnalyzer(
+                    search_service=search_service, analyzer=analyzer, region=mkt
                 )
-                market_report = market_analyzer.run_daily_review()
-                if market_report:
-                    parts.append(f"{review_text[title_key]}\n\n{market_report}")
-            review_report = (
-                f"\n\n---\n\n{review_text['separator']}\n\n".join(parts)
-                if parts
-                else None
-            )
+                mkt_report = mkt_analyzer.run_daily_review()
+                if mkt_report:
+                    parts.append(f"{review_text[title_key]}\n\n{mkt_report}")
+            if parts:
+                review_report = f"\n\n---\n\n{review_text['separator']}\n\n".join(parts)
+            else:
+                review_report = None
         else:
             market_analyzer = MarketAnalyzer(
                 search_service=search_service,

@@ -19,6 +19,7 @@ from api.v1.schemas.system_config import (
     SystemConfigConflictResponse,
     SystemConfigResponse,
     SystemConfigSchemaResponse,
+    SetupStatusResponse,
     SystemConfigValidationErrorResponse,
     TestLLMChannelRequest,
     TestLLMChannelResponse,

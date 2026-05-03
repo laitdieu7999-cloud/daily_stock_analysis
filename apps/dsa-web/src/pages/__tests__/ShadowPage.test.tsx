@@ -133,6 +133,9 @@ describe('ShadowPage', () => {
     expect(await screen.findByRole('heading', { name: 'Shadow 纸面信号' })).toBeInTheDocument();
     expect(screen.getByText('研究入口')).toBeInTheDocument();
     expect(screen.getByText('历史回测')).toBeInTheDocument();
+    expect(screen.getByText('信号表现摘要')).toBeInTheDocument();
+    expect(screen.getAllByText('自选买入').length).toBeGreaterThan(0);
+    expect(screen.getByText('IC Shadow')).toBeInTheDocument();
     expect(screen.getByText('可进 Shadow')).toBeInTheDocument();
     expect(screen.getByText('20')).toBeInTheDocument();
     expect(screen.getAllByText('VWAP成本线(看多)').length).toBeGreaterThan(0);
@@ -141,6 +144,7 @@ describe('ShadowPage', () => {
     expect(screen.getByText('盘中提醒准确率')).toBeInTheDocument();
     expect(screen.getAllByText('买入提醒').length).toBeGreaterThan(0);
     expect(screen.getByText('贵州茅台 · 2026-04-29T14:35:00+08:00')).toBeInTheDocument();
+    expect(screen.getAllByText('查看K线').length).toBeGreaterThan(0);
     expect(screen.getAllByText('观察中').length).toBeGreaterThan(0);
 
     await waitFor(() => {
